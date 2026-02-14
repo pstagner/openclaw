@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -529,7 +530,7 @@ describe("runMessageAction sandboxed media validation", () => {
     }
   });
 
-  it("rejects file:// media outside the sandbox root", async () => {
+  it("rejects traversal media outside the sandbox root", async () => {
     const sandboxDir = await fs.mkdtemp(path.join(os.tmpdir(), "msg-sandbox-"));
     try {
       await expect(
@@ -539,7 +540,7 @@ describe("runMessageAction sandboxed media validation", () => {
           params: {
             channel: "slack",
             target: "#C12345678",
-            media: "file:///etc/passwd",
+            media: "../secret.txt",
             message: "",
           },
           sandboxRoot: sandboxDir,
@@ -548,6 +549,69 @@ describe("runMessageAction sandboxed media validation", () => {
       ).rejects.toThrow(/sandbox/i);
     } finally {
       await fs.rm(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects file:// media outside the sandbox root", async () => {
+    const sandboxDir = await fs.mkdtemp(path.join(os.tmpdir(), "msg-sandbox-"));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "msg-outside-"));
+    try {
+      const outsideFile = path.join(outsideDir, "secret.txt");
+      await fs.writeFile(outsideFile, "secret");
+      await expect(
+        runMessageAction({
+          cfg: slackConfig,
+          action: "send",
+          params: {
+            channel: "slack",
+            target: "#C12345678",
+            media: pathToFileURL(outsideFile).toString(),
+            message: "",
+          },
+          sandboxRoot: sandboxDir,
+          dryRun: true,
+        }),
+      ).rejects.toThrow(/sandbox/i);
+    } finally {
+      await fs.rm(sandboxDir, { recursive: true, force: true });
+      await fs.rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects symlinked media paths that escape sandbox root", async () => {
+    const sandboxDir = await fs.mkdtemp(path.join(os.tmpdir(), "msg-sandbox-"));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "msg-outside-"));
+    try {
+      const outsideFile = path.join(outsideDir, "secret.txt");
+      await fs.writeFile(outsideFile, "secret");
+      const linkPath = path.join(sandboxDir, "outside-link");
+      try {
+        await fs.symlink(outsideDir, linkPath, process.platform === "win32" ? "junction" : "dir");
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === "EPERM" || code === "EACCES" || code === "ENOSYS") {
+          return;
+        }
+        throw err;
+      }
+
+      await expect(
+        runMessageAction({
+          cfg: slackConfig,
+          action: "send",
+          params: {
+            channel: "slack",
+            target: "#C12345678",
+            media: "./outside-link/secret.txt",
+            message: "",
+          },
+          sandboxRoot: sandboxDir,
+          dryRun: true,
+        }),
+      ).rejects.toThrow(/symlink|sandbox/i);
+    } finally {
+      await fs.rm(sandboxDir, { recursive: true, force: true });
+      await fs.rm(outsideDir, { recursive: true, force: true });
     }
   });
 
@@ -591,6 +655,27 @@ describe("runMessageAction sandboxed media validation", () => {
 
       expect(result.kind).toBe("send");
       expect(result.sendResult?.mediaUrl).toBe(path.join(sandboxDir, "data", "note.ogg"));
+    } finally {
+      await fs.rm(sandboxDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects MEDIA directives that escape sandbox root", async () => {
+    const sandboxDir = await fs.mkdtemp(path.join(os.tmpdir(), "msg-sandbox-"));
+    try {
+      await expect(
+        runMessageAction({
+          cfg: slackConfig,
+          action: "send",
+          params: {
+            channel: "slack",
+            target: "#C12345678",
+            message: "Hello\nMEDIA: ../secret.txt",
+          },
+          sandboxRoot: sandboxDir,
+          dryRun: true,
+        }),
+      ).rejects.toThrow(/sandbox/i);
     } finally {
       await fs.rm(sandboxDir, { recursive: true, force: true });
     }
