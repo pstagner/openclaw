@@ -438,7 +438,15 @@ function parseComponentBlock(raw: unknown, label: string): DiscordComponentBlock
       };
     }
     case "separator": {
-      const spacing = obj.spacing as DiscordComponentBlock["spacing"] | undefined;
+      const spacingRaw = obj.spacing;
+      let spacing: DiscordComponentBlock["spacing"] | undefined;
+      if (spacingRaw === "small" || spacingRaw === "large") {
+        spacing = spacingRaw;
+      } else if (spacingRaw === 1 || spacingRaw === 2) {
+        spacing = spacingRaw;
+      } else if (spacingRaw !== undefined) {
+        throw new Error(`${label}.spacing must be "small", "large", 1, or 2`);
+      }
       const divider = typeof obj.divider === "boolean" ? obj.divider : undefined;
       return {
         type: "separator",
