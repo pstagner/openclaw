@@ -83,6 +83,8 @@ export type DiscordComponentSectionAccessory =
       button: DiscordComponentButtonSpec;
     };
 
+type DiscordComponentSeparatorSpacing = "small" | "large" | 1 | 2;
+
 export type DiscordComponentBlock =
   | {
       type: "text";
@@ -96,7 +98,7 @@ export type DiscordComponentBlock =
     }
   | {
       type: "separator";
-      spacing?: "small" | "large" | 1 | 2;
+      spacing?: DiscordComponentSeparatorSpacing;
       divider?: boolean;
     }
   | {
@@ -439,7 +441,7 @@ function parseComponentBlock(raw: unknown, label: string): DiscordComponentBlock
     }
     case "separator": {
       const spacingRaw = obj.spacing;
-      let spacing: DiscordComponentBlock["spacing"] | undefined;
+      let spacing: DiscordComponentSeparatorSpacing | undefined;
       if (spacingRaw === "small" || spacingRaw === "large") {
         spacing = spacingRaw;
       } else if (spacingRaw === 1 || spacingRaw === 2) {
