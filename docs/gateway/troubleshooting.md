@@ -81,6 +81,7 @@ Common signatures:
 
 - `device identity required` → non-secure context or missing device auth.
 - `unauthorized` / reconnect loop → token/password mismatch.
+- `unauthorized: device token mismatch` → stale or instance-mismatched device token; rotate/reissue for that device/role.
 - `gateway connect failed:` → wrong host/port/url target.
 
 Related:
@@ -88,6 +89,7 @@ Related:
 - [/web/control-ui](/web/control-ui)
 - [/gateway/authentication](/gateway/authentication)
 - [/gateway/remote](/gateway/remote)
+- [/gateway/cluster-update-reload](/gateway/cluster-update-reload)
 
 ## Gateway service not running
 

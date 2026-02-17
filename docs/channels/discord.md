@@ -97,16 +97,6 @@ Supported blocks:
 - Action rows allow up to 5 buttons or a single select menu
 - Select types: `string`, `user`, `role`, `mentionable`, `channel`
 
-By default, components are single use. Set `components.reusable=true` to allow buttons, selects, and forms to be used multiple times until they expire.
-
-To restrict who can click a button, set `allowedUsers` on that button (Discord user IDs, tags, or `*`). When configured, unmatched users receive an ephemeral denial.
-
-File attachments:
-
-- `file` blocks must point to an attachment reference (`attachment://<filename>`)
-- Provide the attachment via `media`/`path`/`filePath` (single file); use `media-gallery` for multiple files
-- Use `filename` to override the upload name when it should match the attachment reference
-
 Modal forms:
 
 - Add `components.modal` with up to 5 fields
@@ -122,17 +112,12 @@ Example:
   to: "channel:123456789012345678",
   message: "Optional fallback text",
   components: {
-    reusable: true,
     text: "Choose a path",
     blocks: [
       {
         type: "actions",
         buttons: [
-          {
-            label: "Approve",
-            style: "success",
-            allowedUsers: ["123456789012345678"],
-          },
+          { label: "Approve", style: "success" },
           { label: "Decline", style: "danger" },
         ],
       },
@@ -430,7 +415,7 @@ See [Slash commands](/tools/slash-commands) for command catalog and behavior.
   </Accordion>
 
   <Accordion title="Gateway proxy">
-    Route Discord gateway WebSocket traffic and startup REST lookups (application ID + allowlist resolution) through an HTTP(S) proxy with `channels.discord.proxy`.
+    Route Discord gateway WebSocket traffic through an HTTP(S) proxy with `channels.discord.proxy`.
 
 ```json5
 {

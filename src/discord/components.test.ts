@@ -51,19 +51,6 @@ describe("discord components", () => {
       }),
     ).toThrow("options");
   });
-
-  it("requires attachment references for file blocks", () => {
-    expect(() =>
-      readDiscordComponentSpec({
-        blocks: [{ type: "file", file: "https://example.com/report.pdf" }],
-      }),
-    ).toThrow("attachment://");
-    expect(() =>
-      readDiscordComponentSpec({
-        blocks: [{ type: "file", file: "attachment://" }],
-      }),
-    ).toThrow("filename");
-  });
 });
 
 describe("discord component registry", () => {

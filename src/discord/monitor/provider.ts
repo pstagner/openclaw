@@ -1,16 +1,16 @@
-import { inspect } from "node:util";
+import type { GatewayPlugin } from "@buape/carbon/gateway";
 import {
   Client,
   ReadyListener,
   type BaseMessageInteractiveComponent,
   type Modal,
 } from "@buape/carbon";
-import type { GatewayPlugin } from "@buape/carbon/gateway";
 import { Routes } from "discord-api-types/v10";
-import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { inspect } from "node:util";
+import type { HistoryEntry } from "../../auto-reply/reply/history.js";
+import type { OpenClawConfig, ReplyToMode } from "../../config/config.js";
 import { resolveTextChunkLimit } from "../../auto-reply/chunk.js";
 import { listNativeCommandSpecsForConfig } from "../../auto-reply/commands-registry.js";
-import type { HistoryEntry } from "../../auto-reply/reply/history.js";
 import { listSkillCommandsForAgents } from "../../auto-reply/skill-commands.js";
 import {
   addAllowlistUserEntriesFromConfigEntry,
@@ -25,11 +25,9 @@ import {
   resolveNativeCommandsEnabled,
   resolveNativeSkillsEnabled,
 } from "../../config/commands.js";
-import type { OpenClawConfig, ReplyToMode } from "../../config/config.js";
 import { loadConfig } from "../../config/config.js";
 import { danger, logVerbose, shouldLogVerbose, warn } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { wrapFetchWithAbortSignal } from "../../infra/fetch.js";
 import { createDiscordRetryRunner } from "../../infra/retry-policy.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createNonExitingRuntime, type RuntimeEnv } from "../../runtime.js";
@@ -79,7 +77,7 @@ export type MonitorDiscordOpts = {
   replyToMode?: ReplyToMode;
 };
 
-function summarizeAllowList(list?: string[]) {
+function summarizeAllowList(list?: Array<string | number>) {
   if (!list || list.length === 0) {
     return "any";
   }
@@ -96,46 +94,6 @@ function summarizeGuilds(entries?: Record<string, unknown>) {
   const sample = keys.slice(0, 4);
   const suffix = keys.length > sample.length ? ` (+${keys.length - sample.length})` : "";
   return `${sample.join(", ")}${suffix}`;
-}
-
-function dedupeSkillCommandsForDiscord(
-  skillCommands: ReturnType<typeof listSkillCommandsForAgents>,
-) {
-  const seen = new Set<string>();
-  const deduped: ReturnType<typeof listSkillCommandsForAgents> = [];
-  for (const command of skillCommands) {
-    const key = command.skillName.trim().toLowerCase();
-    if (!key) {
-      deduped.push(command);
-      continue;
-    }
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    deduped.push(command);
-  }
-  return deduped;
-}
-
-function resolveDiscordRestFetch(proxyUrl: string | undefined, runtime: RuntimeEnv): typeof fetch {
-  const proxy = proxyUrl?.trim();
-  if (!proxy) {
-    return fetch;
-  }
-  try {
-    const agent = new ProxyAgent(proxy);
-    const fetcher = ((input: RequestInfo | URL, init?: RequestInit) =>
-      undiciFetch(input as string | URL, {
-        ...(init as Record<string, unknown>),
-        dispatcher: agent,
-      }) as unknown as Promise<Response>) as typeof fetch;
-    runtime.log?.("discord: rest proxy enabled");
-    return wrapFetchWithAbortSignal(fetcher);
-  } catch (err) {
-    runtime.error?.(danger(`discord: invalid rest proxy: ${String(err)}`));
-    return fetch;
-  }
 }
 
 async function deployDiscordCommands(params: {
@@ -204,7 +162,6 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   const runtime: RuntimeEnv = opts.runtime ?? createNonExitingRuntime();
 
   const discordCfg = account.config;
-  const discordRestFetch = resolveDiscordRestFetch(discordCfg.proxy, runtime);
   const dmConfig = discordCfg.dm;
   let guildEntries = discordCfg.guilds;
   const defaultGroupPolicy = cfg.channels?.defaults?.groupPolicy;
@@ -280,7 +237,6 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
           const resolved = await resolveDiscordChannelAllowlist({
             token,
             entries: entries.map((entry) => entry.input),
-            fetcher: discordRestFetch,
           });
           const nextGuilds = { ...guildEntries };
           const mapping: string[] = [];
@@ -337,7 +293,6 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
         const resolvedUsers = await resolveDiscordUserAllowlist({
           token,
           entries: allowEntries.map((entry) => String(entry)),
-          fetcher: discordRestFetch,
         });
         const { mapping, unresolved, additions } = buildAllowlistResolutionSummary(resolvedUsers);
         allowFrom = mergeAllowlist({ existing: allowFrom, additions });
@@ -367,7 +322,6 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
           const resolvedUsers = await resolveDiscordUserAllowlist({
             token,
             entries: Array.from(userEntries),
-            fetcher: discordRestFetch,
           });
           const { resolvedMap, mapping, unresolved } =
             buildAllowlistResolutionSummary(resolvedUsers);
@@ -378,7 +332,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
               continue;
             }
             const nextGuild = { ...guildConfig } as Record<string, unknown>;
-            const users = (guildConfig as { users?: string[] }).users;
+            const users = (guildConfig as { users?: Array<string | number> }).users;
             if (Array.isArray(users) && users.length > 0) {
               const additions = resolveAllowlistIdAdditions({ existing: users, resolvedMap });
               nextGuild.users = mergeAllowlist({ existing: users, additions });
@@ -409,16 +363,14 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     );
   }
 
-  const applicationId = await fetchDiscordApplicationId(token, 4000, discordRestFetch);
+  const applicationId = await fetchDiscordApplicationId(token, 4000);
   if (!applicationId) {
     throw new Error("Failed to resolve Discord application id");
   }
 
   const maxDiscordCommands = 100;
   let skillCommands =
-    nativeEnabled && nativeSkillsEnabled
-      ? dedupeSkillCommandsForDiscord(listSkillCommandsForAgents({ cfg }))
-      : [];
+    nativeEnabled && nativeSkillsEnabled ? listSkillCommandsForAgents({ cfg }) : [];
   let commandSpecs = nativeEnabled
     ? listNativeCommandSpecsForConfig(cfg, { skillCommands, provider: "discord" })
     : [];
@@ -714,6 +666,4 @@ async function clearDiscordNativeCommands(params: {
 
 export const __testing = {
   createDiscordGatewayPlugin,
-  dedupeSkillCommandsForDiscord,
-  resolveDiscordRestFetch,
 };

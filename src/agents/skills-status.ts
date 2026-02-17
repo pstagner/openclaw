@@ -1,7 +1,6 @@
 import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
 import { evaluateEntryMetadataRequirements } from "../shared/entry-status.js";
-import type { RequirementConfigCheck, Requirements } from "../shared/requirements.js";
 import { CONFIG_DIR } from "../utils.js";
 import {
   hasBinary,
@@ -18,7 +17,10 @@ import {
 } from "./skills.js";
 import { resolveBundledSkillsContext } from "./skills/bundled-context.js";
 
-export type SkillStatusConfigCheck = RequirementConfigCheck;
+export type SkillStatusConfigCheck = {
+  path: string;
+  satisfied: boolean;
+};
 
 export type SkillInstallOption = {
   id: string;
@@ -42,8 +44,20 @@ export type SkillStatusEntry = {
   disabled: boolean;
   blockedByAllowlist: boolean;
   eligible: boolean;
-  requirements: Requirements;
-  missing: Requirements;
+  requirements: {
+    bins: string[];
+    anyBins: string[];
+    env: string[];
+    config: string[];
+    os: string[];
+  };
+  missing: {
+    bins: string[];
+    anyBins: string[];
+    env: string[];
+    config: string[];
+    os: string[];
+  };
   configChecks: SkillStatusConfigCheck[];
   install: SkillInstallOption[];
 };
@@ -65,7 +79,6 @@ function selectPreferredInstallSpec(
   if (install.length === 0) {
     return undefined;
   }
-
   const indexed = install.map((spec, index) => ({ spec, index }));
   const findKind = (kind: SkillInstallSpec["kind"]) =>
     indexed.find((item) => item.spec.kind === kind);
@@ -74,32 +87,23 @@ function selectPreferredInstallSpec(
   const nodeSpec = findKind("node");
   const goSpec = findKind("go");
   const uvSpec = findKind("uv");
-  const downloadSpec = findKind("download");
-  const brewAvailable = hasBinary("brew");
 
-  // Table-driven preference chain; first match wins.
-  const pickers: Array<() => { spec: SkillInstallSpec; index: number } | undefined> = [
-    () => (prefs.preferBrew && brewAvailable ? brewSpec : undefined),
-    () => uvSpec,
-    () => nodeSpec,
-    // Only prefer brew when available to avoid guaranteed failure on Linux/Docker.
-    () => (brewAvailable ? brewSpec : undefined),
-    () => goSpec,
-    // Prefer download over an unavailable brew spec.
-    () => downloadSpec,
-    // Last resort: surface descriptive brew-missing error instead of "no installer found".
-    () => brewSpec,
-    () => indexed[0],
-  ];
-
-  for (const pick of pickers) {
-    const selected = pick();
-    if (selected) {
-      return selected;
-    }
+  if (prefs.preferBrew && hasBinary("brew") && brewSpec) {
+    return brewSpec;
   }
-
-  return undefined;
+  if (uvSpec) {
+    return uvSpec;
+  }
+  if (nodeSpec) {
+    return nodeSpec;
+  }
+  if (brewSpec) {
+    return brewSpec;
+  }
+  if (goSpec) {
+    return goSpec;
+  }
+  return indexed[0];
 }
 
 function normalizeInstallOptions(
