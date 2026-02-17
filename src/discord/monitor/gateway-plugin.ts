@@ -2,8 +2,8 @@ import { createRequire } from "node:module";
 import { GatewayIntents, GatewayPlugin } from "@buape/carbon/gateway";
 import WebSocket, { type ClientOptions } from "ws";
 import type { DiscordAccountConfig } from "../../config/types.js";
-import type { RuntimeEnv } from "../../runtime.js";
 import { danger } from "../../globals.js";
+import type { RuntimeEnv } from "../../runtime.js";
 
 const requireFromHere = createRequire(import.meta.url);
 type ProxyAgentCtor = new (proxy: string) => NonNullable<ClientOptions["agent"]>;
