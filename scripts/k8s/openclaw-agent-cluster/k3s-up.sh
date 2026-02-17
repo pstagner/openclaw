@@ -11,7 +11,7 @@ Usage:
 Options:
   --namespace <name>       Kubernetes namespace (default: openclaw-agents)
   --image <tag>            Local image tag to build/import (default: openclaw:agent-cluster-local)
-  --model <provider/model> Initial default model (default: openai/gpt-5.2)
+  --model <provider/model> Model used by all cluster agents (default: openai/gpt-5.2)
   --storage-size <size>    PVC size for OpenClaw state (default: 10Gi)
   --skip-build             Skip docker image build
   --skip-import            Skip k3s/k3d image import
@@ -183,6 +183,11 @@ if [[ "$has_provider_key" -eq 0 ]]; then
 fi
 
 echo "==> Applying config + storage + gateway"
+gateway_sts_exists=0
+if kubectl -n "$NAMESPACE" get statefulset openclaw-gateway >/dev/null 2>&1; then
+  gateway_sts_exists=1
+fi
+
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
@@ -206,15 +211,6 @@ data:
           "model": {
             "primary": "${MODEL}"
           },
-          "models": {
-            "openai/gpt-5.2": { "alias": "GPT-5.2" },
-            "openai-codex/gpt-5.3-codex": { "alias": "Codex 5.3" },
-            "anthropic/claude-opus-4-6": { "alias": "Opus 4.6" },
-            "anthropic/claude-sonnet-4-5": { "alias": "Sonnet 4.5" },
-            "google/gemini-3-pro-preview": { "alias": "Gemini 3 Pro" },
-            "zai/glm-4.7": { "alias": "GLM 4.7" },
-            "minimax/minimax-m2.1": { "alias": "MiniMax M2.1" }
-          },
           "sandbox": {
             "mode": "off"
           },
@@ -232,6 +228,7 @@ data:
             "name": "Orchestrator",
             "workspace": "/home/node/.openclaw/workspace-orchestrator",
             "agentDir": "/home/node/.openclaw/agents/orchestrator/agent",
+            "model": "${MODEL}",
             "subagents": {
               "allowAgents": ["researcher", "builder", "reviewer"]
             }
@@ -240,19 +237,22 @@ data:
             "id": "researcher",
             "name": "Researcher",
             "workspace": "/home/node/.openclaw/workspace-researcher",
-            "agentDir": "/home/node/.openclaw/agents/researcher/agent"
+            "agentDir": "/home/node/.openclaw/agents/researcher/agent",
+            "model": "${MODEL}"
           },
           {
             "id": "builder",
             "name": "Builder",
             "workspace": "/home/node/.openclaw/workspace-builder",
-            "agentDir": "/home/node/.openclaw/agents/builder/agent"
+            "agentDir": "/home/node/.openclaw/agents/builder/agent",
+            "model": "${MODEL}"
           },
           {
             "id": "reviewer",
             "name": "Reviewer",
             "workspace": "/home/node/.openclaw/workspace-reviewer",
-            "agentDir": "/home/node/.openclaw/agents/reviewer/agent"
+            "agentDir": "/home/node/.openclaw/agents/reviewer/agent",
+            "model": "${MODEL}"
           }
         ]
       },
@@ -392,6 +392,11 @@ spec:
       targetPort: gateway
   type: ClusterIP
 EOF
+
+if [[ "$gateway_sts_exists" -eq 1 ]]; then
+  echo "==> Restarting gateway to pick up updated secret env"
+  kubectl -n "$NAMESPACE" rollout restart statefulset/openclaw-gateway
+fi
 
 echo "==> Waiting for gateway rollout"
 kubectl -n "$NAMESPACE" rollout status statefulset/openclaw-gateway --timeout=240s

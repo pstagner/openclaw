@@ -561,6 +561,63 @@ function parseDiscordModalId(data: ComponentData, customId?: string): string | n
   return null;
 }
 
+function readModalTextValue(
+  fields: ModalInteraction["fields"],
+  key: string,
+  required?: boolean,
+): string | undefined {
+  if (required === true) {
+    return fields.getText(key, true);
+  }
+  return fields.getText(key);
+}
+
+function readModalStringSelectValues(
+  fields: ModalInteraction["fields"],
+  key: string,
+  required?: boolean,
+): string[] | undefined {
+  if (required === true) {
+    return fields.getStringSelect(key, true);
+  }
+  return fields.getStringSelect(key);
+}
+
+function readModalRoleSelectValues(
+  fields: ModalInteraction["fields"],
+  key: string,
+  required?: boolean,
+) {
+  if (required === true) {
+    return fields.getRoleSelect(key, true);
+  }
+  return fields.getRoleSelect(key);
+}
+
+function readModalUserSelectValues(
+  fields: ModalInteraction["fields"],
+  key: string,
+  required?: boolean,
+) {
+  if (required === true) {
+    return fields.getUserSelect(key, true);
+  }
+  return fields.getUserSelect(key);
+}
+
+function readInteractionCustomId(interaction: AgentComponentMessageInteraction): string | undefined {
+  const direct = (interaction as { customId?: unknown }).customId;
+  if (typeof direct === "string" && direct.trim().length > 0) {
+    return direct;
+  }
+  const raw = (interaction.rawData as { data?: { custom_id?: unknown } } | undefined)?.data
+    ?.custom_id;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return raw;
+  }
+  return undefined;
+}
+
 function mapOptionLabels(
   options: Array<{ value: string; label: string }> | undefined,
   values: string[],
@@ -603,26 +660,26 @@ function resolveModalFieldValues(
   try {
     switch (field.type) {
       case "text": {
-        const value = fields.getText(field.id, field.required);
+        const value = readModalTextValue(fields, field.id, field.required);
         return value ? [value] : [];
       }
       case "select":
       case "checkbox":
       case "radio": {
-        const values = fields.getStringSelect(field.id, field.required) ?? [];
+        const values = readModalStringSelectValues(fields, field.id, field.required) ?? [];
         return mapOptionLabels(optionLabels, values);
       }
       case "role-select": {
         try {
-          const roles = fields.getRoleSelect(field.id, field.required) ?? [];
+          const roles = readModalRoleSelectValues(fields, field.id, field.required) ?? [];
           return roles.map((role) => role.name ?? role.id);
         } catch {
-          const values = fields.getStringSelect(field.id, field.required) ?? [];
+          const values = readModalStringSelectValues(fields, field.id, field.required) ?? [];
           return values;
         }
       }
       case "user-select": {
-        const users = fields.getUserSelect(field.id, field.required) ?? [];
+        const users = readModalUserSelectValues(fields, field.id, field.required) ?? [];
         return users.map((user) => formatDiscordUserTag(user));
       }
       default:
@@ -683,7 +740,7 @@ async function dispatchDiscordComponentEvent(params: {
   const fromLabel = interactionCtx.isDirectMessage
     ? buildDirectLabel(interactionCtx.user)
     : buildGuildLabel({
-        guild: interaction.guild ?? undefined,
+        guild: interaction.guild as { name?: string } | undefined,
         channelName: channelCtx.channelName ?? interactionCtx.channelId,
         channelId: interactionCtx.channelId,
       });
@@ -849,7 +906,10 @@ async function handleDiscordComponentEvent(params: {
   values?: string[];
   label: string;
 }): Promise<void> {
-  const parsed = parseDiscordComponentData(params.data, params.interaction.customId);
+  const parsed = parseDiscordComponentData(
+    params.data,
+    readInteractionCustomId(params.interaction),
+  );
   if (!parsed) {
     logError(`${params.label}: failed to parse component data`);
     try {
@@ -967,7 +1027,10 @@ async function handleDiscordModalTrigger(params: {
   data: ComponentData;
   label: string;
 }): Promise<void> {
-  const parsed = parseDiscordComponentData(params.data, params.interaction.customId);
+  const parsed = parseDiscordComponentData(
+    params.data,
+    readInteractionCustomId(params.interaction),
+  );
   if (!parsed) {
     logError(`${params.label}: failed to parse modal trigger data`);
     try {
@@ -1267,7 +1330,7 @@ class DiscordComponentButton extends Button {
   }
 
   async run(interaction: ButtonInteraction, data: ComponentData): Promise<void> {
-    const parsed = parseDiscordComponentData(data, interaction.customId);
+    const parsed = parseDiscordComponentData(data, readInteractionCustomId(interaction));
     if (parsed?.modalId) {
       await handleDiscordModalTrigger({
         ctx: this.ctx,

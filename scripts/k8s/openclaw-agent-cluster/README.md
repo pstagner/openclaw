@@ -44,11 +44,6 @@ export OPENCLAW_GATEWAY_TOKEN="<shared-token>" # optional; auto-generated if omi
   --smoke
 ```
 
-Notes:
-
-- `--model` sets the initial default only.
-- The deploy now seeds a multi-provider model allowlist so you can switch models later in the Control UI without redeploying.
-
 ## Connect
 
 ```bash
