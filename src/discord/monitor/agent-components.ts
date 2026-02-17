@@ -605,9 +605,7 @@ function readModalUserSelectValues(
   return fields.getUserSelect(key);
 }
 
-function readInteractionCustomId(
-  interaction: AgentComponentMessageInteraction,
-): string | undefined {
+function readInteractionCustomId(interaction: AgentComponentMessageInteraction): string | undefined {
   const direct = (interaction as { customId?: unknown }).customId;
   if (typeof direct === "string" && direct.trim().length > 0) {
     return direct;
