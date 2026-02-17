@@ -68,3 +68,4 @@ Pass `--token` or `--password` explicitly. Missing explicit credentials is an er
 
 - Token rotation returns a new token (sensitive). Treat it like a secret.
 - These commands require `operator.pairing` (or `operator.admin`) scope.
+- For rolling update and reload workflows across multiple gateway instances, use [Cluster update and reload](/gateway/cluster-update-reload).
