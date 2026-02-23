@@ -1,4 +1,3 @@
-import type { APIStringSelectComponent } from "discord-api-types/v10";
 import {
   Button,
   ChannelSelectMenu,
@@ -16,9 +15,8 @@ import {
   type StringSelectMenuInteraction,
   type UserSelectMenuInteraction,
 } from "@buape/carbon";
+import type { APIStringSelectComponent } from "discord-api-types/v10";
 import { ButtonStyle, ChannelType } from "discord-api-types/v10";
-import type { OpenClawConfig } from "../../config/config.js";
-import type { DiscordAccountConfig } from "../../config/types.discord.js";
 import { resolveHumanDelayConfig } from "../../agents/identity.js";
 import { resolveChunkMode, resolveTextChunkLimit } from "../../auto-reply/chunk.js";
 import { formatInboundEnvelope, resolveEnvelopeFormatOptions } from "../../auto-reply/envelope.js";
@@ -27,8 +25,10 @@ import { dispatchReplyWithBufferedBlockDispatcher } from "../../auto-reply/reply
 import { createReplyReferencePlanner } from "../../auto-reply/reply/reply-reference.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { recordInboundSession } from "../../channels/session.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
 import { readSessionUpdatedAt, resolveStorePath } from "../../config/sessions.js";
+import type { DiscordAccountConfig } from "../../config/types.discord.js";
 import { logVerbose } from "../../globals.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { logDebug, logError } from "../../logger.js";
@@ -422,7 +422,8 @@ async function ensureDmComponentAuthorized(params: {
     return true;
   }
 
-  const storeAllowFrom = await readChannelAllowFromStore("discord").catch(() => []);
+  const storeAllowFrom =
+    dmPolicy === "allowlist" ? [] : await readChannelAllowFromStore("discord").catch(() => []);
   const effectiveAllowFrom = [...(ctx.allowFrom ?? []), ...storeAllowFrom];
   const allowList = normalizeDiscordAllowList(effectiveAllowFrom, ["discord:", "user:", "pk:"]);
   const allowMatch = allowList
@@ -605,7 +606,9 @@ function readModalUserSelectValues(
   return fields.getUserSelect(key);
 }
 
-function readInteractionCustomId(interaction: AgentComponentMessageInteraction): string | undefined {
+function readInteractionCustomId(
+  interaction: AgentComponentMessageInteraction,
+): string | undefined {
   const direct = (interaction as { customId?: unknown }).customId;
   if (typeof direct === "string" && direct.trim().length > 0) {
     return direct;
@@ -877,6 +880,7 @@ async function dispatchDiscordComponentEvent(params: {
           rest: interaction.client.rest,
           runtime,
           replyToId,
+          replyToMode,
           textLimit,
           maxLinesPerMessage: ctx.discordConfig?.maxLinesPerMessage,
           tableMode,

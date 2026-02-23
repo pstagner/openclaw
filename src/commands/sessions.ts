@@ -1,3 +1,4 @@
+import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { lookupContextTokens } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveConfiguredModelRef } from "../agents/model-selection.js";
@@ -8,9 +9,10 @@ import {
   resolveStorePath,
   type SessionEntry,
 } from "../config/sessions.js";
-import { classifySessionKey } from "../gateway/session-utils.js";
+import { classifySessionKey, resolveSessionModelRef } from "../gateway/session-utils.js";
 import { info } from "../globals.js";
 import { formatTimeAgo } from "../infra/format-time/format-relative.ts";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { isRich, theme } from "../terminal/theme.js";
 
@@ -33,6 +35,9 @@ type SessionRow = {
   totalTokens?: number;
   totalTokensFresh?: boolean;
   model?: string;
+  modelProvider?: string;
+  providerOverride?: string;
+  modelOverride?: string;
   contextTokens?: number;
 };
 
@@ -153,6 +158,9 @@ function toRows(store: Record<string, SessionEntry>): SessionRow[] {
         totalTokens: entry?.totalTokens,
         totalTokensFresh: entry?.totalTokensFresh,
         model: entry?.model,
+        modelProvider: entry?.modelProvider,
+        providerOverride: entry?.providerOverride,
+        modelOverride: entry?.modelOverride,
         contextTokens: entry?.contextTokens,
       } satisfies SessionRow;
     })
@@ -174,7 +182,8 @@ export async function sessionsCommand(
     lookupContextTokens(resolved.model) ??
     DEFAULT_CONTEXT_TOKENS;
   const configModel = resolved.model ?? DEFAULT_MODEL;
-  const storePath = resolveStorePath(opts.store ?? cfg.session?.store);
+  const defaultAgentId = resolveDefaultAgentId(cfg);
+  const storePath = resolveStorePath(opts.store ?? cfg.session?.store, { agentId: defaultAgentId });
   const store = loadSessionStore(storePath);
 
   let activeMinutes: number | undefined;
@@ -205,15 +214,23 @@ export async function sessionsCommand(
           path: storePath,
           count: rows.length,
           activeMinutes: activeMinutes ?? null,
-          sessions: rows.map((r) => ({
-            ...r,
-            totalTokens: resolveFreshSessionTotalTokens(r) ?? null,
-            totalTokensFresh:
-              typeof r.totalTokens === "number" ? r.totalTokensFresh !== false : false,
-            contextTokens:
-              r.contextTokens ?? lookupContextTokens(r.model) ?? configContextTokens ?? null,
-            model: r.model ?? configModel ?? null,
-          })),
+          sessions: rows.map((r) => {
+            const resolvedModel = resolveSessionModelRef(
+              cfg,
+              r,
+              parseAgentSessionKey(r.key)?.agentId,
+            );
+            const model = resolvedModel.model ?? configModel;
+            return {
+              ...r,
+              totalTokens: resolveFreshSessionTotalTokens(r) ?? null,
+              totalTokensFresh:
+                typeof r.totalTokens === "number" ? r.totalTokensFresh !== false : false,
+              contextTokens:
+                r.contextTokens ?? lookupContextTokens(model) ?? configContextTokens ?? null,
+              model,
+            };
+          }),
         },
         null,
         2,
@@ -245,7 +262,8 @@ export async function sessionsCommand(
   runtime.log(rich ? theme.heading(header) : header);
 
   for (const row of rows) {
-    const model = row.model ?? configModel;
+    const resolvedModel = resolveSessionModelRef(cfg, row, parseAgentSessionKey(row.key)?.agentId);
+    const model = resolvedModel.model ?? configModel;
     const contextTokens = row.contextTokens ?? lookupContextTokens(model) ?? configContextTokens;
     const total = resolveFreshSessionTotalTokens(row);
 

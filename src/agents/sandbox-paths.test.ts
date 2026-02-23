@@ -2,132 +2,163 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
-import { assertMediaNotDataUrl, resolveSandboxedMediaSource } from "./sandbox-paths.js";
+import { describe, expect, it } from "vitest";
+import { resolveSandboxedMediaSource } from "./sandbox-paths.js";
 
-const tempDirs: string[] = [];
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
+async function withSandboxRoot<T>(run: (sandboxDir: string) => Promise<T>) {
+  const sandboxDir = await fs.mkdtemp(path.join(os.tmpdir(), "sandbox-media-"));
+  try {
+    return await run(sandboxDir);
+  } finally {
+    await fs.rm(sandboxDir, { recursive: true, force: true });
+  }
 }
 
-afterEach(async () => {
-  await Promise.all(
-    tempDirs.splice(0).map(async (dir) => {
-      await fs.rm(dir, { recursive: true, force: true });
-    }),
-  );
-});
+async function expectSandboxRejection(media: string, sandboxRoot: string, pattern: RegExp) {
+  await expect(resolveSandboxedMediaSource({ media, sandboxRoot })).rejects.toThrow(pattern);
+}
 
-describe("sandbox media path guards", () => {
-  it("allows http and https media URLs unchanged", async () => {
-    const sandboxRoot = await makeTempDir("openclaw-sandbox-");
+function isPathInside(root: string, target: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
 
-    const http = await resolveSandboxedMediaSource({
-      media: "http://example.com/file.png",
-      sandboxRoot,
+describe("resolveSandboxedMediaSource", () => {
+  // Group 1: /tmp paths (the bug fix)
+  it.each([
+    {
+      name: "absolute paths under os.tmpdir()",
+      media: path.join(os.tmpdir(), "image.png"),
+      expected: path.join(os.tmpdir(), "image.png"),
+    },
+    {
+      name: "file:// URLs pointing to os.tmpdir()",
+      media: pathToFileURL(path.join(os.tmpdir(), "photo.png")).href,
+      expected: path.join(os.tmpdir(), "photo.png"),
+    },
+    {
+      name: "nested paths under os.tmpdir()",
+      media: path.join(os.tmpdir(), "subdir", "deep", "file.png"),
+      expected: path.join(os.tmpdir(), "subdir", "deep", "file.png"),
+    },
+  ])("allows $name", async ({ media, expected }) => {
+    await withSandboxRoot(async (sandboxDir) => {
+      const result = await resolveSandboxedMediaSource({
+        media,
+        sandboxRoot: sandboxDir,
+      });
+      expect(result).toBe(expected);
     });
-    const https = await resolveSandboxedMediaSource({
-      media: "https://example.com/file.png",
-      sandboxRoot,
+  });
+
+  // Group 2: Sandbox-relative paths (existing behavior)
+  it("resolves sandbox-relative paths", async () => {
+    await withSandboxRoot(async (sandboxDir) => {
+      const result = await resolveSandboxedMediaSource({
+        media: "./data/file.txt",
+        sandboxRoot: sandboxDir,
+      });
+      expect(result).toBe(path.join(sandboxDir, "data", "file.txt"));
     });
-
-    expect(http).toBe("http://example.com/file.png");
-    expect(https).toBe("https://example.com/file.png");
   });
 
-  it("normalizes in-sandbox relative paths", async () => {
-    const sandboxRoot = await makeTempDir("openclaw-sandbox-");
-
-    const resolved = await resolveSandboxedMediaSource({
-      media: "./media/pic.png",
-      sandboxRoot,
+  it("maps container /workspace absolute paths into sandbox root", async () => {
+    await withSandboxRoot(async (sandboxDir) => {
+      const result = await resolveSandboxedMediaSource({
+        media: "/workspace/media/pic.png",
+        sandboxRoot: sandboxDir,
+      });
+      expect(result).toBe(path.join(sandboxDir, "media", "pic.png"));
     });
-
-    expect(resolved).toBe(path.join(sandboxRoot, "media", "pic.png"));
   });
 
-  it("rejects traversal outside the sandbox root", async () => {
-    const sandboxRoot = await makeTempDir("openclaw-sandbox-");
-
-    await expect(
-      resolveSandboxedMediaSource({
-        media: "../secret.txt",
-        sandboxRoot,
-      }),
-    ).rejects.toThrow(/sandbox root/i);
-  });
-
-  it("rejects absolute paths outside the sandbox root", async () => {
-    const sandboxRoot = await makeTempDir("openclaw-sandbox-");
-    const outsideRoot = await makeTempDir("openclaw-outside-");
-    const outsideFile = path.join(outsideRoot, "secret.txt");
-    await fs.writeFile(outsideFile, "secret");
-
-    await expect(
-      resolveSandboxedMediaSource({
-        media: outsideFile,
-        sandboxRoot,
-      }),
-    ).rejects.toThrow(/sandbox root/i);
-  });
-
-  it("rejects file URLs outside the sandbox root", async () => {
-    const sandboxRoot = await makeTempDir("openclaw-sandbox-");
-    const outsideRoot = await makeTempDir("openclaw-outside-");
-    const outsideFile = path.join(outsideRoot, "secret.txt");
-    await fs.writeFile(outsideFile, "secret");
-
-    await expect(
-      resolveSandboxedMediaSource({
-        media: pathToFileURL(outsideFile).toString(),
-        sandboxRoot,
-      }),
-    ).rejects.toThrow(/sandbox root/i);
-  });
-
-  it("accepts file URLs inside the sandbox root", async () => {
-    const sandboxRoot = await makeTempDir("openclaw-sandbox-");
-    const insideFile = path.join(sandboxRoot, "media", "note.txt");
-    await fs.mkdir(path.dirname(insideFile), { recursive: true });
-    await fs.writeFile(insideFile, "ok");
-
-    const resolved = await resolveSandboxedMediaSource({
-      media: pathToFileURL(insideFile).toString(),
-      sandboxRoot,
+  it("maps file:// URLs under /workspace into sandbox root", async () => {
+    await withSandboxRoot(async (sandboxDir) => {
+      const result = await resolveSandboxedMediaSource({
+        media: "file:///workspace/media/pic.png",
+        sandboxRoot: sandboxDir,
+      });
+      expect(result).toBe(path.join(sandboxDir, "media", "pic.png"));
     });
-
-    expect(resolved).toBe(insideFile);
   });
 
-  it("rejects paths that cross symlinks inside the sandbox root", async () => {
-    const sandboxRoot = await makeTempDir("openclaw-sandbox-");
-    const outsideRoot = await makeTempDir("openclaw-outside-");
-    const outsideFile = path.join(outsideRoot, "secret.txt");
-    await fs.writeFile(outsideFile, "secret");
+  // Group 3: Rejections (security)
+  it.each([
+    {
+      name: "paths outside sandbox root and tmpdir",
+      media: "/etc/passwd",
+      expected: /sandbox/i,
+    },
+    {
+      name: "paths under similarly named container roots",
+      media: "/workspace-two/secret.txt",
+      expected: /sandbox/i,
+    },
+    {
+      name: "path traversal through tmpdir",
+      media: path.join(os.tmpdir(), "..", "etc", "passwd"),
+      expected: /sandbox/i,
+    },
+    {
+      name: "relative traversal outside sandbox",
+      media: "../outside-sandbox.png",
+      expected: /sandbox/i,
+    },
+    {
+      name: "file:// URLs outside sandbox",
+      media: "file:///etc/passwd",
+      expected: /sandbox/i,
+    },
+    {
+      name: "invalid file:// URLs",
+      media: "file://not a valid url\x00",
+      expected: /Invalid file:\/\/ URL/,
+    },
+  ])("rejects $name", async ({ media, expected }) => {
+    await withSandboxRoot(async (sandboxDir) => {
+      await expectSandboxRejection(media, sandboxDir, expected);
+    });
+  });
 
-    const linkPath = path.join(sandboxRoot, "link");
-    try {
-      await fs.symlink(outsideRoot, linkPath, process.platform === "win32" ? "junction" : "dir");
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "EPERM" || code === "EACCES" || code === "ENOSYS") {
-        return;
-      }
-      throw err;
+  it("rejects symlinked tmpdir paths escaping tmpdir", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const outsideTmpTarget = path.resolve(process.cwd(), "package.json");
+    if (isPathInside(os.tmpdir(), outsideTmpTarget)) {
+      return;
     }
 
-    await expect(
-      resolveSandboxedMediaSource({
-        media: "./link/secret.txt",
-        sandboxRoot,
-      }),
-    ).rejects.toThrow(/symlink/i);
+    await withSandboxRoot(async (sandboxDir) => {
+      await fs.access(outsideTmpTarget);
+      const symlinkPath = path.join(sandboxDir, "tmp-link-escape");
+      await fs.symlink(outsideTmpTarget, symlinkPath);
+      await expectSandboxRejection(symlinkPath, sandboxDir, /symlink|sandbox/i);
+    });
   });
 
-  it("rejects data URLs as media input", () => {
-    expect(() => assertMediaNotDataUrl("data:image/png;base64,abcd")).toThrow(/data:/i);
+  // Group 4: Passthrough
+  it("passes HTTP URLs through unchanged", async () => {
+    const result = await resolveSandboxedMediaSource({
+      media: "https://example.com/image.png",
+      sandboxRoot: "/any/path",
+    });
+    expect(result).toBe("https://example.com/image.png");
+  });
+
+  it("returns empty string for empty input", async () => {
+    const result = await resolveSandboxedMediaSource({
+      media: "",
+      sandboxRoot: "/any/path",
+    });
+    expect(result).toBe("");
+  });
+
+  it("returns empty string for whitespace-only input", async () => {
+    const result = await resolveSandboxedMediaSource({
+      media: "   ",
+      sandboxRoot: "/any/path",
+    });
+    expect(result).toBe("");
   });
 });

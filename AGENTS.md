@@ -114,6 +114,16 @@
 ## Git Notes
 
 - If `git branch -d/-D <branch>` is policy-blocked, delete the local ref directly: `git update-ref -d refs/heads/<branch>`.
+- Bulk PR close/reopen safety: if a close action would affect more than 5 PRs, first ask for explicit user confirmation with the exact PR count and target scope/query.
+
+## GitHub Search (`gh`)
+
+- Prefer targeted keyword search before proposing new work or duplicating fixes.
+- Use `--repo openclaw/openclaw` + `--match title,body` first; add `--match comments` when triaging follow-up threads.
+- PRs: `gh search prs --repo openclaw/openclaw --match title,body --limit 50 -- "auto-update"`
+- Issues: `gh search issues --repo openclaw/openclaw --match title,body --limit 50 -- "auto-update"`
+- Structured output example:
+  `gh search issues --repo openclaw/openclaw --match title,body --limit 50 --json number,title,state,url,updatedAt -- "auto update" --jq '.[] | "\(.number) | \(.state) | \(.title) | \(.url)"'`
 
 ## Security & Configuration Tips
 
@@ -125,6 +135,7 @@
 
 ## GHSA (Repo Advisory) Patch/Publish
 
+- Before reviewing security advisories, read `SECURITY.md`.
 - Fetch: `gh api /repos/openclaw/openclaw/security-advisories/<GHSA>`
 - Latest npm: `npm view openclaw version --userconfig "$(mktemp)"`
 - Private fork PRs must be closed:
@@ -132,6 +143,7 @@
   `gh pr list -R "$fork" --state open` (must be empty)
 - Description newline footgun: write Markdown via heredoc to `/tmp/ghsa.desc.md` (no `"\\n"` strings)
 - Build patch JSON via jq: `jq -n --rawfile desc /tmp/ghsa.desc.md '{summary,severity,description:$desc,vulnerabilities:[...]}' > /tmp/ghsa.patch.json`
+- GHSA API footgun: cannot set `severity` and `cvss_vector_string` in the same PATCH; do separate calls.
 - Patch + publish: `gh api -X PATCH /repos/openclaw/openclaw/security-advisories/<GHSA> --input /tmp/ghsa.patch.json` (publish = include `"state":"published"`; no `/publish` endpoint)
 - If publish fails (HTTP 422): missing `severity`/`description`/`vulnerabilities[]`, or private fork has open PRs
 - Verify: re-fetch; ensure `state=published`, `published_at` set; `jq -r .description | rg '\\\\n'` returns nothing
@@ -217,7 +229,7 @@
   - skip if package is missing on npm or version already matches.
 - Keep `openclaw` untouched: never run publish from repo root unless explicitly requested.
 - Post-check for each release:
-  - per-plugin: `npm view @openclaw/<name> version --userconfig "$(mktemp)"` should be `2026.2.16`
+  - per-plugin: `npm view @openclaw/<name> version --userconfig "$(mktemp)"` should be `2026.2.17`
   - core guard: `npm view openclaw version --userconfig "$(mktemp)"` should stay at previous version unless explicitly requested.
 
 ## Changelog Release Notes
