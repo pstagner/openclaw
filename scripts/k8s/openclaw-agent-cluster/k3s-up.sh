@@ -116,6 +116,8 @@ if command -v k3d >/dev/null 2>&1 && [[ "$context" == k3d-* ]]; then
   runtime="k3d"
 elif command -v k3s >/dev/null 2>&1; then
   runtime="k3s"
+elif [[ "$context" == "docker-desktop" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'desktop-worker'; then
+  runtime="docker-desktop"
 fi
 
 if [[ "$SKIP_IMPORT" -eq 0 ]]; then
@@ -134,11 +136,29 @@ if [[ "$SKIP_IMPORT" -eq 0 ]]; then
       echo "Run: docker save $IMAGE | sudo k3s ctr images import -" >&2
       exit 1
     fi
+  elif [[ "$runtime" == "docker-desktop" ]]; then
+    echo "==> Importing image into Docker Desktop Kubernetes (containerd on worker nodes)"
+    workers="$(docker ps --filter 'name=desktop-worker' --format '{{.Names}}' 2>/dev/null)"
+    if [[ -z "$workers" ]]; then
+      echo "No desktop-worker containers found; trying desktop-control-plane." >&2
+      workers="$(docker ps --filter 'name=desktop-control-plane' --format '{{.Names}}' 2>/dev/null)"
+    fi
+    if [[ -z "$workers" ]]; then
+      echo "Could not find Docker Desktop node containers." >&2
+      echo "Rerun with --skip-import and manually import: docker save $IMAGE | docker exec -i <node> ctr -n k8s.io images import -" >&2
+      exit 1
+    fi
+    for node in $workers; do
+      echo "  Importing into $node..."
+      docker save "$IMAGE" | docker exec -i "$node" ctr -n k8s.io images import - 2>/dev/null || {
+        echo "  Warning: import into $node failed (may be control-plane only)." >&2
+      }
+    done
   else
-    echo "Could not detect a local k3s/k3d runtime for image import." >&2
+    echo "Could not detect a local k3s/k3d/docker-desktop runtime for image import." >&2
     echo "Current kubectl context: ${context:-<none>}." >&2
-    echo "This script deploys imagePullPolicy=Never, so local images must be imported into k3s/k3d." >&2
-    echo "Fix: use a k3d context (k3d-*) or a k3s host with the k3s CLI installed." >&2
+    echo "This script deploys imagePullPolicy=Never, so local images must be imported into k3s/k3d/docker-desktop." >&2
+    echo "Fix: use a k3d context (k3d-*), k3s host, or Docker Desktop with worker nodes." >&2
     echo "If you intentionally use a registry image, rerun with --skip-import and --image <registry/image:tag> after editing pull policy." >&2
     exit 1
   fi
@@ -223,8 +243,15 @@ data:
         },
         "list": [
           {
-            "id": "orchestrator",
+            "id": "main",
             "default": true,
+            "name": "Main",
+            "workspace": "/home/node/.openclaw/workspace-main",
+            "agentDir": "/home/node/.openclaw/agents/main/agent",
+            "model": "${MODEL}"
+          },
+          {
+            "id": "orchestrator",
             "name": "Orchestrator",
             "workspace": "/home/node/.openclaw/workspace-orchestrator",
             "agentDir": "/home/node/.openclaw/agents/orchestrator/agent",
@@ -259,7 +286,7 @@ data:
       "tools": {
         "agentToAgent": {
           "enabled": true,
-          "allow": ["orchestrator", "researcher", "builder", "reviewer"]
+          "allow": ["main", "orchestrator", "researcher", "builder", "reviewer"]
         }
       },
       "session": {
@@ -410,6 +437,8 @@ echo
 echo "Access the gateway from your machine:"
 echo "  kubectl -n $NAMESPACE port-forward svc/openclaw-gateway 18789:18789"
 echo
+echo "Quick smoke test (agent main):"
+echo "  kubectl -n $NAMESPACE exec openclaw-gateway-0 -- node dist/index.js agent --local --agent main --message \"reply with OK\""
 echo "Run a collaboration turn (orchestrator -> subagents) inside the pod without gateway pairing:"
 echo "  kubectl -n $NAMESPACE exec openclaw-gateway-0 -- node dist/index.js agent --local --agent orchestrator --message \"Plan a k3s reliability hardening pass. Use researcher, builder, and reviewer via sessions_spawn, then summarize.\""
 echo

@@ -4,7 +4,8 @@ This deploys the **OpenClaw gateway** plus a **collaborative multi-agent configu
 
 Agents created:
 
-- `orchestrator` (default)
+- `main` (default) – simple agent for quick smoke tests
+- `orchestrator` – spawns researcher, builder, reviewer for collaboration
 - `researcher`
 - `builder`
 - `reviewer`
@@ -12,7 +13,7 @@ Agents created:
 Collaboration settings:
 
 - `tools.agentToAgent.enabled=true`
-- `tools.agentToAgent.allow=[orchestrator,researcher,builder,reviewer]`
+- `tools.agentToAgent.allow=[main,orchestrator,researcher,builder,reviewer]`
 - `orchestrator.subagents.allowAgents=[researcher,builder,reviewer]`
 
 Gateway bind behavior in this setup:
@@ -28,8 +29,8 @@ Gateway bind behavior in this setup:
 
 Important:
 
-- This setup expects a `k3s`/`k3d` runtime so it can import a local image with `imagePullPolicy: Never`.
-- `docker-desktop` Kubernetes context is not supported by this script's local-image import flow.
+- This setup expects a `k3s`/`k3d`/`docker-desktop` runtime so it can import a local image with `imagePullPolicy: Never`.
+- Docker Desktop: the script detects worker nodes (`desktop-worker*`) and imports the image into each node's containerd.
 
 ## Deploy
 
@@ -53,6 +54,15 @@ kubectl -n openclaw-agents port-forward svc/openclaw-gateway 18789:18789
 Then point your local OpenClaw CLI/client at `ws://127.0.0.1:18789` using the same token.
 
 ## Trigger collaboration manually
+
+Quick smoke test:
+
+```bash
+kubectl -n openclaw-agents exec openclaw-gateway-0 -- \
+  node dist/index.js agent --local --agent main --message "reply with OK"
+```
+
+Full collaboration:
 
 ```bash
 kubectl -n openclaw-agents exec openclaw-gateway-0 -- \
