@@ -10,6 +10,7 @@ import {
   readChannelAllowFromStore,
   upsertChannelPairingRequest,
 } from "../../pairing/pairing-store.js";
+import { readStoreAllowFromForDmPolicy } from "../../security/dm-policy-shared.js";
 import { chunkItems } from "../../utils/chunk-items.js";
 import type { ResolvedSlackAccount } from "../accounts.js";
 import {
@@ -335,10 +336,13 @@ export async function registerSlackMonitorSlashCommands(params: {
         return;
       }
 
-      const storeAllowFrom =
-        ctx.dmPolicy === "allowlist"
-          ? []
-          : await readChannelAllowFromStore("slack").catch(() => []);
+      const storeAllowFrom = isDirectMessage
+        ? await readStoreAllowFromForDmPolicy({
+            provider: "slack",
+            dmPolicy: ctx.dmPolicy,
+            readStore: (provider) => readChannelAllowFromStore(provider),
+          })
+        : [];
       const effectiveAllowFrom = normalizeAllowList([...ctx.allowFrom, ...storeAllowFrom]);
       const effectiveAllowFromLower = normalizeAllowListLower(effectiveAllowFrom);
 
@@ -361,6 +365,7 @@ export async function registerSlackMonitorSlashCommands(params: {
             allowList: effectiveAllowFromLower,
             id: command.user_id,
             name: senderName,
+            allowNameMatching: ctx.allowNameMatching,
           });
           const allowMatchMeta = formatAllowlistMatchMeta(allowMatch);
           if (!allowMatch.allowed) {
@@ -446,6 +451,7 @@ export async function registerSlackMonitorSlashCommands(params: {
             allowList: channelConfig?.users,
             userId: command.user_id,
             userName: senderName,
+            allowNameMatching: ctx.allowNameMatching,
           })
         : false;
       if (channelUsersAllowlistConfigured && !channelUserAllowed) {
@@ -460,6 +466,7 @@ export async function registerSlackMonitorSlashCommands(params: {
         allowList: effectiveAllowFromLower,
         id: command.user_id,
         name: senderName,
+        allowNameMatching: ctx.allowNameMatching,
       }).allowed;
       // DMs: allow chatting in dmPolicy=open, but keep privileged command gating intact by setting
       // CommandAuthorized based on allowlists/access-groups (downstream decides which commands need it).

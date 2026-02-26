@@ -43,6 +43,7 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
   ],
   [READ_SCOPE]: [
     "health",
+    "doctor.memory.status",
     "logs.tail",
     "channels.status",
     "status",
@@ -100,6 +101,7 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "agents.delete",
     "skills.install",
     "skills.update",
+    "secrets.reload",
     "cron.add",
     "cron.update",
     "cron.remove",

@@ -1,12 +1,14 @@
 import { createRequire } from "node:module";
 import { GatewayIntents, GatewayPlugin } from "@buape/carbon/gateway";
-import WebSocket, { type ClientOptions } from "ws";
+import type { APIGatewayBotInfo } from "discord-api-types/v10";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
+import WebSocket from "ws";
 import type { DiscordAccountConfig } from "../../config/types.js";
 import { danger } from "../../globals.js";
 import type { RuntimeEnv } from "../../runtime.js";
 
 const requireFromHere = createRequire(import.meta.url);
-type ProxyAgentCtor = new (proxy: string) => NonNullable<ClientOptions["agent"]>;
+type ProxyAgentCtor = new (proxy: string) => import("http").Agent;
 
 function resolveHttpsProxyAgentCtor(): ProxyAgentCtor | null {
   try {
@@ -64,7 +66,8 @@ export function createDiscordGatewayPlugin(params: {
       );
       return new GatewayPlugin(options);
     }
-    const agent = new HttpsProxyAgent(proxy);
+    const wsAgent = new HttpsProxyAgent(proxy);
+    const fetchAgent = new ProxyAgent(proxy);
 
     params.runtime.log?.("discord: gateway proxy enabled");
 
@@ -73,8 +76,28 @@ export function createDiscordGatewayPlugin(params: {
         super(options);
       }
 
-      createWebSocket(url: string) {
-        return new WebSocket(url, { agent });
+      override async registerClient(client: Parameters<GatewayPlugin["registerClient"]>[0]) {
+        if (!this.gatewayInfo) {
+          try {
+            const response = await undiciFetch("https://discord.com/api/v10/gateway/bot", {
+              headers: {
+                Authorization: `Bot ${client.options.token}`,
+              },
+              dispatcher: fetchAgent,
+            } as Record<string, unknown>);
+            this.gatewayInfo = (await response.json()) as APIGatewayBotInfo;
+          } catch (error) {
+            throw new Error(
+              `Failed to get gateway information from Discord: ${error instanceof Error ? error.message : String(error)}`,
+              { cause: error },
+            );
+          }
+        }
+        return super.registerClient(client);
+      }
+
+      override createWebSocket(url: string) {
+        return new WebSocket(url, { agent: wsAgent });
       }
     }
 

@@ -1,14 +1,15 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import {
+  DM_GROUP_ACCESS_REASON,
   createReplyPrefixOptions,
   evictOldHistoryKeys,
   logAckFailure,
   logInboundDrop,
   logTypingFailure,
+  readStoreAllowFromForDmPolicy,
   recordPendingHistoryEntryIfEnabled,
   resolveAckReaction,
-  resolveDmGroupAccessDecision,
-  resolveEffectiveAllowFromLists,
+  resolveDmGroupAccessWithLists,
   resolveControlCommandGate,
   stripMarkdown,
   type HistoryEntry,
@@ -501,27 +502,19 @@ export async function processMessage(
 
   const dmPolicy = account.config.dmPolicy ?? "pairing";
   const groupPolicy = account.config.groupPolicy ?? "allowlist";
-  const storeAllowFrom = await core.channel.pairing
-    .readAllowFromStore("bluebubbles")
-    .catch(() => []);
-  const { effectiveAllowFrom, effectiveGroupAllowFrom } = resolveEffectiveAllowFromLists({
-    allowFrom: account.config.allowFrom,
-    groupAllowFrom: account.config.groupAllowFrom,
-    storeAllowFrom,
+  const configuredAllowFrom = (account.config.allowFrom ?? []).map((entry) => String(entry));
+  const storeAllowFrom = await readStoreAllowFromForDmPolicy({
+    provider: "bluebubbles",
     dmPolicy,
+    readStore: (provider) => core.channel.pairing.readAllowFromStore(provider),
   });
-  const groupAllowEntry = formatGroupAllowlistEntry({
-    chatGuid: message.chatGuid,
-    chatId: message.chatId ?? undefined,
-    chatIdentifier: message.chatIdentifier ?? undefined,
-  });
-  const groupName = message.chatName?.trim() || undefined;
-  const accessDecision = resolveDmGroupAccessDecision({
+  const accessDecision = resolveDmGroupAccessWithLists({
     isGroup,
     dmPolicy,
     groupPolicy,
-    effectiveAllowFrom,
-    effectiveGroupAllowFrom,
+    allowFrom: configuredAllowFrom,
+    groupAllowFrom: account.config.groupAllowFrom,
+    storeAllowFrom,
     isSenderAllowed: (allowFrom) =>
       isAllowedBlueBubblesSender({
         allowFrom,
@@ -531,10 +524,18 @@ export async function processMessage(
         chatIdentifier: message.chatIdentifier ?? undefined,
       }),
   });
+  const effectiveAllowFrom = accessDecision.effectiveAllowFrom;
+  const effectiveGroupAllowFrom = accessDecision.effectiveGroupAllowFrom;
+  const groupAllowEntry = formatGroupAllowlistEntry({
+    chatGuid: message.chatGuid,
+    chatId: message.chatId ?? undefined,
+    chatIdentifier: message.chatIdentifier ?? undefined,
+  });
+  const groupName = message.chatName?.trim() || undefined;
 
   if (accessDecision.decision !== "allow") {
     if (isGroup) {
-      if (accessDecision.reason === "groupPolicy=disabled") {
+      if (accessDecision.reasonCode === DM_GROUP_ACCESS_REASON.GROUP_POLICY_DISABLED) {
         logVerbose(core, runtime, "Blocked BlueBubbles group message (groupPolicy=disabled)");
         logGroupAllowlistHint({
           runtime,
@@ -545,7 +546,7 @@ export async function processMessage(
         });
         return;
       }
-      if (accessDecision.reason === "groupPolicy=allowlist (empty allowlist)") {
+      if (accessDecision.reasonCode === DM_GROUP_ACCESS_REASON.GROUP_POLICY_EMPTY_ALLOWLIST) {
         logVerbose(core, runtime, "Blocked BlueBubbles group message (no allowlist)");
         logGroupAllowlistHint({
           runtime,
@@ -556,7 +557,7 @@ export async function processMessage(
         });
         return;
       }
-      if (accessDecision.reason === "groupPolicy=allowlist (not allowlisted)") {
+      if (accessDecision.reasonCode === DM_GROUP_ACCESS_REASON.GROUP_POLICY_NOT_ALLOWLISTED) {
         logVerbose(
           core,
           runtime,
@@ -579,7 +580,7 @@ export async function processMessage(
       return;
     }
 
-    if (accessDecision.reason === "dmPolicy=disabled") {
+    if (accessDecision.reasonCode === DM_GROUP_ACCESS_REASON.DM_POLICY_DISABLED) {
       logVerbose(core, runtime, `Blocked BlueBubbles DM from ${message.senderId}`);
       logVerbose(core, runtime, `drop: dmPolicy disabled sender=${message.senderId}`);
       return;
@@ -666,10 +667,11 @@ export async function processMessage(
   // Command gating (parity with iMessage/WhatsApp)
   const useAccessGroups = config.commands?.useAccessGroups !== false;
   const hasControlCmd = core.channel.text.hasControlCommand(messageText, config);
+  const commandDmAllowFrom = isGroup ? configuredAllowFrom : effectiveAllowFrom;
   const ownerAllowedForCommands =
-    effectiveAllowFrom.length > 0
+    commandDmAllowFrom.length > 0
       ? isAllowedBlueBubblesSender({
-          allowFrom: effectiveAllowFrom,
+          allowFrom: commandDmAllowFrom,
           sender: message.senderId,
           chatId: message.chatId ?? undefined,
           chatGuid: message.chatGuid ?? undefined,
@@ -686,17 +688,16 @@ export async function processMessage(
           chatIdentifier: message.chatIdentifier ?? undefined,
         })
       : false;
-  const dmAuthorized = dmPolicy === "open" || ownerAllowedForCommands;
   const commandGate = resolveControlCommandGate({
     useAccessGroups,
     authorizers: [
-      { configured: effectiveAllowFrom.length > 0, allowed: ownerAllowedForCommands },
+      { configured: commandDmAllowFrom.length > 0, allowed: ownerAllowedForCommands },
       { configured: effectiveGroupAllowFrom.length > 0, allowed: groupAllowedForCommands },
     ],
     allowTextCommands: true,
     hasControlCommand: hasControlCmd,
   });
-  const commandAuthorized = isGroup ? commandGate.commandAuthorized : dmAuthorized;
+  const commandAuthorized = commandGate.commandAuthorized;
 
   // Block control commands from unauthorized senders in groups
   if (isGroup && commandGate.shouldBlock) {
@@ -1386,21 +1387,18 @@ export async function processReaction(
 
   const dmPolicy = account.config.dmPolicy ?? "pairing";
   const groupPolicy = account.config.groupPolicy ?? "allowlist";
-  const storeAllowFrom = await core.channel.pairing
-    .readAllowFromStore("bluebubbles")
-    .catch(() => []);
-  const { effectiveAllowFrom, effectiveGroupAllowFrom } = resolveEffectiveAllowFromLists({
-    allowFrom: account.config.allowFrom,
-    groupAllowFrom: account.config.groupAllowFrom,
-    storeAllowFrom,
+  const storeAllowFrom = await readStoreAllowFromForDmPolicy({
+    provider: "bluebubbles",
     dmPolicy,
+    readStore: (provider) => core.channel.pairing.readAllowFromStore(provider),
   });
-  const accessDecision = resolveDmGroupAccessDecision({
+  const accessDecision = resolveDmGroupAccessWithLists({
     isGroup: reaction.isGroup,
     dmPolicy,
     groupPolicy,
-    effectiveAllowFrom,
-    effectiveGroupAllowFrom,
+    allowFrom: account.config.allowFrom,
+    groupAllowFrom: account.config.groupAllowFrom,
+    storeAllowFrom,
     isSenderAllowed: (allowFrom) =>
       isAllowedBlueBubblesSender({
         allowFrom,
