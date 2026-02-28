@@ -224,6 +224,9 @@ data:
         "auth": {
           "mode": "token",
           "token": "${gateway_token}"
+        },
+        "controlUi": {
+          "dangerouslyAllowHostHeaderOriginFallback": true
         }
       },
       "agents": {
