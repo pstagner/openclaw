@@ -13,7 +13,6 @@ import { registerDiscordComponentEntries } from "./components-registry.js";
 import {
   buildDiscordComponentMessage,
   buildDiscordComponentMessageFlags,
-  resolveDiscordComponentAttachmentName,
   type DiscordComponentMessageSpec,
 } from "./components.js";
 import {
@@ -34,7 +33,7 @@ function extractComponentAttachmentNames(spec: DiscordComponentMessageSpec): str
   const names: string[] = [];
   for (const block of spec.blocks ?? []) {
     if (block.type === "file") {
-      names.push(resolveDiscordComponentAttachmentName(block.file));
+      names.push(block.file.replace("attachment://", ""));
     }
   }
   return names;

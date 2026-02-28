@@ -58,6 +58,7 @@ import {
   resolveDiscordChannelConfigWithFallback,
   resolveDiscordGuildEntry,
   resolveDiscordMemberAccessState,
+  resolveDiscordMemberAllowed,
   resolveDiscordOwnerAllowFrom,
 } from "./allow-list.js";
 import { formatDiscordUserTag } from "./format.js";
@@ -267,15 +268,15 @@ async function ensureGuildComponentMemberAllowed(params: {
     scope: channelCtx.isThread ? "thread" : "channel",
   });
 
-  const { memberAllowed } = resolveDiscordMemberAccessState({
-    channelConfig,
-    guildInfo,
+  const channelUsers = channelConfig?.users ?? guildInfo?.users;
+  const channelRoles = channelConfig?.roles ?? guildInfo?.roles;
+  const memberAllowed = resolveDiscordMemberAllowed({
+    userAllowList: channelUsers,
+    roleAllowList: channelRoles,
     memberRoleIds,
-    sender: {
-      id: user.id,
-      name: user.username,
-      tag: user.discriminator ? `${user.username}#${user.discriminator}` : undefined,
-    },
+    userId: user.id,
+    userName: user.username,
+    userTag: user.discriminator ? `${user.username}#${user.discriminator}` : undefined,
     allowNameMatching: params.allowNameMatching,
   });
   if (memberAllowed) {
@@ -381,7 +382,7 @@ export type AgentComponentContext = {
   token?: string;
   guildEntries?: Record<string, DiscordGuildEntryResolved>;
   /** DM allowlist (from allowFrom config; legacy: dm.allowFrom) */
-  allowFrom?: string[];
+  allowFrom?: Array<string | number>;
   /** DM policy (default: "pairing") */
   dmPolicy?: "open" | "pairing" | "allowlist" | "disabled";
 };
@@ -474,7 +475,7 @@ async function ensureDmComponentAuthorized(params: {
     accountId: ctx.accountId,
     dmPolicy,
   });
-  const effectiveAllowFrom = [...(ctx.allowFrom ?? []), ...storeAllowFrom];
+  const effectiveAllowFrom = [...(ctx.allowFrom ?? []), ...storeAllowFrom].map(String);
   const allowList = normalizeDiscordAllowList(effectiveAllowFrom, ["discord:", "user:", "pk:"]);
   const allowMatch = allowList
     ? resolveDiscordAllowListMatch({
@@ -614,20 +615,63 @@ function parseDiscordModalId(data: ComponentData, customId?: string): string | n
   return null;
 }
 
-function resolveInteractionCustomId(interaction: AgentComponentInteraction): string | undefined {
-  if (!interaction?.rawData || typeof interaction.rawData !== "object") {
-    return undefined;
+function readModalTextValue(
+  fields: ModalInteraction["fields"],
+  key: string,
+  required?: boolean,
+): string | undefined {
+  if (required === true) {
+    return fields.getText(key, true);
   }
-  if (!("data" in interaction.rawData)) {
-    return undefined;
+  return fields.getText(key);
+}
+
+function readModalStringSelectValues(
+  fields: ModalInteraction["fields"],
+  key: string,
+  required?: boolean,
+): string[] | undefined {
+  if (required === true) {
+    return fields.getStringSelect(key, true);
   }
-  const data = (interaction.rawData as { data?: { custom_id?: unknown } }).data;
-  const customId = data?.custom_id;
-  if (typeof customId !== "string") {
-    return undefined;
+  return fields.getStringSelect(key);
+}
+
+function readModalRoleSelectValues(
+  fields: ModalInteraction["fields"],
+  key: string,
+  required?: boolean,
+) {
+  if (required === true) {
+    return fields.getRoleSelect(key, true);
   }
-  const trimmed = customId.trim();
-  return trimmed ? trimmed : undefined;
+  return fields.getRoleSelect(key);
+}
+
+function readModalUserSelectValues(
+  fields: ModalInteraction["fields"],
+  key: string,
+  required?: boolean,
+) {
+  if (required === true) {
+    return fields.getUserSelect(key, true);
+  }
+  return fields.getUserSelect(key);
+}
+
+function readInteractionCustomId(
+  interaction: AgentComponentMessageInteraction,
+): string | undefined {
+  const direct = (interaction as { customId?: unknown }).customId;
+  if (typeof direct === "string" && direct.trim().length > 0) {
+    return direct;
+  }
+  const raw = (interaction.rawData as { data?: { custom_id?: unknown } } | undefined)?.data
+    ?.custom_id;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return raw;
+  }
+  return undefined;
 }
 
 function mapOptionLabels(
@@ -669,38 +713,29 @@ function resolveModalFieldValues(
     value: option.value,
     label: option.label,
   }));
-  const required = field.required === true;
   try {
     switch (field.type) {
       case "text": {
-        const value = required ? fields.getText(field.id, true) : fields.getText(field.id);
+        const value = readModalTextValue(fields, field.id, field.required);
         return value ? [value] : [];
       }
       case "select":
       case "checkbox":
       case "radio": {
-        const values = required
-          ? fields.getStringSelect(field.id, true)
-          : (fields.getStringSelect(field.id) ?? []);
+        const values = readModalStringSelectValues(fields, field.id, field.required) ?? [];
         return mapOptionLabels(optionLabels, values);
       }
       case "role-select": {
         try {
-          const roles = required
-            ? fields.getRoleSelect(field.id, true)
-            : (fields.getRoleSelect(field.id) ?? []);
+          const roles = readModalRoleSelectValues(fields, field.id, field.required) ?? [];
           return roles.map((role) => role.name ?? role.id);
         } catch {
-          const values = required
-            ? fields.getStringSelect(field.id, true)
-            : (fields.getStringSelect(field.id) ?? []);
+          const values = readModalStringSelectValues(fields, field.id, field.required) ?? [];
           return values;
         }
       }
       case "user-select": {
-        const users = required
-          ? fields.getUserSelect(field.id, true)
-          : (fields.getUserSelect(field.id) ?? []);
+        const users = readModalUserSelectValues(fields, field.id, field.required) ?? [];
         return users.map((user) => formatDiscordUserTag(user));
       }
       default:
@@ -742,7 +777,11 @@ function resolveComponentCommandAuthorized(params: {
     return true;
   }
 
-  const ownerAllowList = normalizeDiscordAllowList(ctx.allowFrom, ["discord:", "user:", "pk:"]);
+  const ownerAllowList = normalizeDiscordAllowList(ctx.allowFrom?.map(String), [
+    "discord:",
+    "user:",
+    "pk:",
+  ]);
   const ownerOk = ownerAllowList
     ? resolveDiscordAllowListMatch({
         allowList: ownerAllowList,
@@ -812,7 +851,7 @@ async function dispatchDiscordComponentEvent(params: {
   const fromLabel = interactionCtx.isDirectMessage
     ? buildDirectLabel(interactionCtx.user)
     : buildGuildLabel({
-        guild: interaction.guild ?? undefined,
+        guild: interaction.guild as { name?: string } | undefined,
         channelName: channelCtx.channelName ?? interactionCtx.channelId,
         channelId: interactionCtx.channelId,
       });
@@ -990,7 +1029,7 @@ async function handleDiscordComponentEvent(params: {
 }): Promise<void> {
   const parsed = parseDiscordComponentData(
     params.data,
-    resolveInteractionCustomId(params.interaction),
+    readInteractionCustomId(params.interaction),
   );
   if (!parsed) {
     logError(`${params.label}: failed to parse component data`);
@@ -1033,7 +1072,6 @@ async function handleDiscordComponentEvent(params: {
     guildEntries: params.ctx.guildEntries,
   });
   const channelCtx = resolveDiscordChannelContext(params.interaction);
-  const unauthorizedReply = `You are not authorized to use this ${params.componentLabel}.`;
   const memberAllowed = await ensureGuildComponentMemberAllowed({
     interaction: params.interaction,
     guildInfo,
@@ -1044,7 +1082,7 @@ async function handleDiscordComponentEvent(params: {
     user,
     replyOpts,
     componentLabel: params.componentLabel,
-    unauthorizedReply,
+    unauthorizedReply: `You are not authorized to use this ${params.componentLabel}.`,
     allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
   });
   if (!memberAllowed) {
@@ -1057,7 +1095,7 @@ async function handleDiscordComponentEvent(params: {
     user,
     replyOpts,
     componentLabel: params.componentLabel,
-    unauthorizedReply,
+    unauthorizedReply: `You are not authorized to use this ${params.componentLabel}.`,
     allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
   });
   if (!componentAllowed) {
@@ -1129,7 +1167,7 @@ async function handleDiscordModalTrigger(params: {
 }): Promise<void> {
   const parsed = parseDiscordComponentData(
     params.data,
-    resolveInteractionCustomId(params.interaction),
+    readInteractionCustomId(params.interaction),
   );
   if (!parsed) {
     logError(`${params.label}: failed to parse modal trigger data`);
@@ -1185,7 +1223,6 @@ async function handleDiscordModalTrigger(params: {
     guildEntries: params.ctx.guildEntries,
   });
   const channelCtx = resolveDiscordChannelContext(params.interaction);
-  const unauthorizedReply = "You are not authorized to use this form.";
   const memberAllowed = await ensureGuildComponentMemberAllowed({
     interaction: params.interaction,
     guildInfo,
@@ -1196,7 +1233,7 @@ async function handleDiscordModalTrigger(params: {
     user,
     replyOpts,
     componentLabel: "form",
-    unauthorizedReply,
+    unauthorizedReply: "You are not authorized to use this form.",
     allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
   });
   if (!memberAllowed) {
@@ -1209,7 +1246,7 @@ async function handleDiscordModalTrigger(params: {
     user,
     replyOpts,
     componentLabel: "form",
-    unauthorizedReply,
+    unauthorizedReply: "You are not authorized to use this form.",
     allowNameMatching: isDangerousNameMatchingEnabled(params.ctx.discordConfig),
   });
   if (!componentAllowed) {
@@ -1448,7 +1485,7 @@ class DiscordComponentButton extends Button {
   }
 
   async run(interaction: ButtonInteraction, data: ComponentData): Promise<void> {
-    const parsed = parseDiscordComponentData(data, resolveInteractionCustomId(interaction));
+    const parsed = parseDiscordComponentData(data, readInteractionCustomId(interaction));
     if (parsed?.modalId) {
       await handleDiscordModalTrigger({
         ctx: this.ctx,
@@ -1592,7 +1629,7 @@ class DiscordComponentModal extends Modal {
   }
 
   async run(interaction: ModalInteraction, data: ComponentData): Promise<void> {
-    const modalId = parseDiscordModalId(data, resolveInteractionCustomId(interaction));
+    const modalId = parseDiscordModalId(data, interaction.customId);
     if (!modalId) {
       logError("discord component modal: missing modal id");
       try {
@@ -1652,10 +1689,7 @@ class DiscordComponentModal extends Modal {
       return;
     }
 
-    const consumed = resolveDiscordModalEntry({
-      id: modalId,
-      consume: !modalEntry.reusable,
-    });
+    const consumed = resolveDiscordModalEntry({ id: modalId });
     if (!consumed) {
       try {
         await interaction.reply({
