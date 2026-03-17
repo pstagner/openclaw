@@ -113,9 +113,22 @@ Common signatures:
   challenge-based device auth flow (`connect.challenge` + `device.nonce`).
 - `device signature invalid` / `device signature expired` → client signed the wrong
   payload (or stale timestamp) for the current handshake.
-- `unauthorized` / reconnect loop → token/password mismatch.
+- `unauthorized` / reconnect loop → token/password mismatch or shared token drift.
+- `AUTH_TOKEN_MISMATCH` with `canRetryWithDeviceToken=true` → client can do one trusted retry with cached device token.
+- repeated `unauthorized` after that retry → shared token/device token drift; refresh token config and re-approve/rotate device token if needed.
 - `unauthorized: device token mismatch` → stale or instance-mismatched device token; rotate/reissue for that device/role.
 - `gateway connect failed:` → wrong host/port/url target.
+
+### Auth detail codes quick map
+
+Use `error.details.code` from the failed `connect` response to pick the next action:
+
+| Detail code                  | Meaning                                                  | Recommended action                                                                                                                                                   |
+| ---------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_TOKEN_MISSING`         | Client did not send a required shared token.             | Paste/set token in the client and retry. For dashboard paths: `openclaw config get gateway.auth.token` then paste into Control UI settings.                          |
+| `AUTH_TOKEN_MISMATCH`        | Shared token did not match gateway auth token.           | If `canRetryWithDeviceToken=true`, allow one trusted retry. If still failing, run the [token drift recovery checklist](/cli/devices#token-drift-recovery-checklist). |
+| `AUTH_DEVICE_TOKEN_MISMATCH` | Cached per-device token is stale or revoked.             | Rotate/re-approve device token using [devices CLI](/cli/devices), then reconnect.                                                                                    |
+| `PAIRING_REQUIRED`           | Device identity is known but not approved for this role. | Approve pending request: `openclaw devices list` then `openclaw devices approve <requestId>`.                                                                        |
 
 Device auth v2 migration check:
 
@@ -136,6 +149,7 @@ Related:
 - [/web/control-ui](/web/control-ui)
 - [/gateway/authentication](/gateway/authentication)
 - [/gateway/remote](/gateway/remote)
+- [/cli/devices](/cli/devices)
 - [/gateway/cluster-update-reload](/gateway/cluster-update-reload)
 
 ## Gateway service not running
@@ -278,19 +292,18 @@ Look for:
 
 - Valid browser executable path.
 - CDP profile reachability.
-- Extension relay tab attachment for `profile="chrome"`.
+- Local Chrome availability for `existing-session` / `user` profiles.
 
 Common signatures:
 
 - `Failed to start Chrome CDP on port` → browser process failed to launch.
 - `browser.executablePath not found` → configured path is invalid.
-- `Chrome extension relay is running, but no tab is connected` → extension relay not attached.
+- `No Chrome tabs found for profile="user"` → the Chrome MCP attach profile has no open local Chrome tabs.
 - `Browser attachOnly is enabled ... not reachable` → attach-only profile has no reachable target.
 
 Related:
 
 - [/tools/browser-linux-troubleshooting](/tools/browser-linux-troubleshooting)
-- [/tools/chrome-extension](/tools/chrome-extension)
 - [/tools/browser](/tools/browser)
 
 ## If you upgraded and something suddenly broke
