@@ -9,51 +9,95 @@ title: "Testing"
 
 # Testing
 
-OpenClaw has three Vitest suites (unit/integration, e2e, live) and a small set of Docker runners.
+OpenClaw has three Vitest suites (unit/integration, e2e, live) plus a small set of Docker and Parallels smoke runners.
 
-This doc is a “how we test” guide:
+This doc is a “how we test locally” guide:
 
 - What each suite covers (and what it deliberately does _not_ cover)
 - Which commands to run for common workflows (local, pre-push, debugging)
 - How live tests discover credentials and select models/providers
 - How to add regressions for real-world model/provider issues
 
+Important: prefer `pnpm test` over raw `vitest run` for day-to-day local debugging. The wrapper in `scripts/test-parallel.mjs` picks the right config/pool defaults and can route a path filter to the correct suite automatically.
+
 ## Quick start
 
-Most days:
+Most local work:
 
-- Full gate (expected before push): `pnpm build && pnpm check && pnpm test`
+- Fast default lane: `pnpm test`
+- One file / folder / substring: `pnpm test -- src/commands/onboard-search.test.ts`
+- One test name inside a target: `pnpm test -- src/commands/onboard-search.test.ts -t "shows registered plugin providers"`
+- Memory-constrained host: `OPENCLAW_TEST_PROFILE=low OPENCLAW_TEST_SERIAL_GATEWAY=1 pnpm test`
 
-When you touch tests or want extra confidence:
+Pre-push gate:
+
+- `pnpm check`
+- `pnpm build`
+- `pnpm test`
+- `pnpm check:docs` when you changed docs
+
+When you need broader coverage:
 
 - Coverage gate: `pnpm test:coverage`
-- E2E suite: `pnpm test:e2e`
+- Gateway e2e smoke: `pnpm test:e2e`
+- Channel-heavy suites: `pnpm test:channels`
+- Non-channel extension suites: `pnpm test:extensions`
+- Gateway unit/integration lane: `pnpm test:gateway`
 
 When debugging real providers/models (requires real creds):
 
 - Live suite (models + gateway tool/image probes): `pnpm test:live`
 
-Tip: when you only need one failing case, prefer narrowing live tests via the allowlist env vars described below.
+Tip: when you only need one failing case, prefer narrowing the wrapper or live suite with a path filter / allowlist instead of running everything.
+
+## Local wrapper: use `pnpm test` first
+
+- `pnpm test` runs `scripts/test-parallel.mjs`, not bare Vitest.
+- The default run is the fast core unit lane from `vitest.unit.config.ts`, split into `unit-fast` and `unit-isolated` groups.
+- The wrapper auto-routes targeted filters to the right config:
+  - `src/gateway/**` uses `vitest.gateway.config.ts`
+  - Channel-heavy paths under `extensions/telegram/**`, `extensions/discord/**`, `extensions/whatsapp/**`, `extensions/slack/**`, `extensions/signal/**`, `extensions/imessage/**`, `src/browser/**`, and `src/line/**` use `vitest.channels.config.ts`
+  - Other `extensions/**` tests use `vitest.extensions.config.ts`
+  - `src/**/*.live.test.ts` uses `vitest.live.config.ts`
+  - `src/**/*.e2e.test.ts` and `test/**/*.e2e.test.ts` use `vitest.e2e.config.ts`
+  - `src/agents/**`, `src/auto-reply/**`, `src/commands/**`, `test/**`, and `ui/**` use `vitest.config.ts`
+- Examples:
+  - `pnpm test -- src/gateway/client.test.ts`
+  - `pnpm test -- extensions/slack/src/monitor/slash.test.ts`
+  - `pnpm test -- src/agents/model-auth.profiles.test.ts`
+- Some Vitest flags require a single run. For coverage or similar single-run workflows, use the dedicated script (`pnpm test:coverage`) or target one config/file at a time.
+- Useful local overrides:
+  - `OPENCLAW_TEST_PROFILE=low|normal|serial|max`
+  - `OPENCLAW_TEST_WORKERS=<n>` to clamp per-lane workers
+  - `OPENCLAW_TEST_VM_FORKS=0|1` to force `forks`/`vmForks` on eligible unit lanes
+  - `OPENCLAW_TEST_INCLUDE_GATEWAY=1` or `OPENCLAW_TEST_INCLUDE_EXTENSIONS=1` to include those suites in an untargeted `pnpm test`
+  - `OPENCLAW_TEST_SHOW_PASSED_LOGS=1` to disable the default `--silent=passed-only`
 
 ## Test suites (what runs where)
 
 Think of the suites as “increasing realism” (and increasing flakiness/cost):
 
-### Unit / integration (default)
+### Unit / integration (default local lane)
 
 - Command: `pnpm test`
-- Config: `scripts/test-parallel.mjs` (runs `vitest.unit.config.ts`, `vitest.extensions.config.ts`, `vitest.gateway.config.ts`)
-- Files: `src/**/*.test.ts`, `extensions/**/*.test.ts`
+- Wrapper: `scripts/test-parallel.mjs`
+- Default config: `vitest.unit.config.ts`
+- Additional configs when targeted: `vitest.config.ts`, `vitest.channels.config.ts`, `vitest.extensions.config.ts`, `vitest.gateway.config.ts`, `vitest.live.config.ts`, `vitest.e2e.config.ts`
 - Scope:
-  - Pure unit tests
-  - In-process integration tests (gateway auth, routing, tooling, parsing, config)
+  - Fast core unit coverage on selected `src/**/*.test.ts` files plus `test/format-error.test.ts`
+  - Split lanes for setup-heavy or high-variance files (`unit-fast` and `unit-isolated`)
   - Deterministic regressions for known bugs
 - Expectations:
   - Runs in CI
   - No real keys required
   - Should be fast and stable
+- Not included in an untargeted `pnpm test` by default:
+  - Gateway tests
+  - Channel/browser/LINE tests
+  - Extension tests
+  - Many setup-heavy `src/agents/**`, `src/auto-reply/**`, `src/commands/**`, `test/**`, and `ui/**` tests unless you target them explicitly
 - Pool note:
-  - OpenClaw uses Vitest `vmForks` on Node 22, 23, and 24 for faster unit shards.
+  - OpenClaw uses Vitest `vmForks` on Node 22, 23, and 24 for eligible unit lanes.
   - On Node 25+, OpenClaw automatically falls back to regular `forks` until the repo is re-validated there.
   - Override manually with `OPENCLAW_TEST_VM_FORKS=0` (force `forks`) or `OPENCLAW_TEST_VM_FORKS=1` (force `vmForks`).
 
@@ -63,8 +107,9 @@ Think of the suites as “increasing realism” (and increasing flakiness/cost):
 - Config: `vitest.e2e.config.ts`
 - Files: `src/**/*.e2e.test.ts`, `test/**/*.e2e.test.ts`
 - Runtime defaults:
-  - Uses Vitest `vmForks` for faster file startup.
-  - Uses adaptive workers (CI: 2-4, local: 4-8).
+  - Uses process `forks` for deterministic isolation.
+  - Local default worker count is `1`.
+  - CI defaults to a conservative worker count (up to `2`, based on CPU count).
   - Runs in silent mode by default to reduce console I/O overhead.
 - Useful overrides:
   - `OPENCLAW_E2E_WORKERS=<n>` to force worker count (capped at 16).
@@ -114,7 +159,11 @@ Think of the suites as “increasing realism” (and increasing flakiness/cost):
 
 Use this decision table:
 
-- Editing logic/tests: run `pnpm test` (and `pnpm test:coverage` if you changed a lot)
+- Editing core logic already covered by the fast lane: run `pnpm test` (and `pnpm test:coverage` if you changed a lot)
+- Touching `src/agents/**`, `src/auto-reply/**`, `src/commands/**`, `test/**`, or `ui/**`: run `pnpm test -- <path-or-filter>`
+- Touching gateway unit/integration code: run `pnpm test:gateway` or `pnpm test -- src/gateway/<path>.test.ts`
+- Touching channel surfaces: run `pnpm test:channels` or `pnpm test -- <channel test path>`
+- Touching non-channel extensions: run `pnpm test:extensions` or `pnpm test -- extensions/<path>.test.ts`
 - Touching gateway networking / WS protocol / pairing: add `pnpm test:e2e`
 - Debugging “my bot is down” / provider-specific failures / tool calling: run a narrowed `pnpm test:live`
 
@@ -369,6 +418,8 @@ These run `pnpm test:live` inside the repo Docker image, mounting your local con
 - Onboarding wizard (TTY, full scaffolding): `pnpm test:docker:onboard` (script: `scripts/e2e/onboard-docker.sh`)
 - Gateway networking (two containers, WS auth + health): `pnpm test:docker:gateway-network` (script: `scripts/e2e/gateway-network-docker.sh`)
 - Plugins (custom extension load + registry smoke): `pnpm test:docker:plugins` (script: `scripts/e2e/plugins-docker.sh`)
+- QR import compatibility: `pnpm test:docker:qr` (script: `scripts/e2e/qr-import-docker.sh`)
+- Doctor install/switch smoke: `pnpm test:docker:doctor-switch` (script: `scripts/e2e/doctor-install-switch-docker.sh`)
 
 The live-model Docker runners also bind-mount the current checkout read-only and
 stage it into a temporary workdir inside the container. This keeps the runtime
@@ -387,6 +438,24 @@ Useful env vars:
 - External CLI auth dirs under `$HOME` (`.codex`, `.claude`, `.qwen`, `.minimax`) are mounted read-only to the matching `/home/node/...` paths when present
 - `OPENCLAW_LIVE_GATEWAY_MODELS=...` / `OPENCLAW_LIVE_MODELS=...` to narrow the run
 - `OPENCLAW_LIVE_REQUIRE_PROFILE_KEYS=1` to ensure creds come from the profile store (not env)
+
+## Advanced local smokes
+
+Use these when the normal `pnpm test` / `pnpm test:e2e` / `pnpm test:live` lanes are not enough:
+
+- Install script smoke (Docker): `pnpm test:install:smoke`
+  - Verifies installer behavior in clean containers.
+  - Use `OPENCLAW_INSTALL_SMOKE_SKIP_NONROOT=1 pnpm test:install:smoke` when you only need the root install path.
+- Install script e2e (Docker): `pnpm test:install:e2e`
+  - Drives install + onboarding + gateway health in a clean container.
+  - Provider-specific shortcuts: `pnpm test:install:e2e:anthropic`, `pnpm test:install:e2e:openai`
+- Docker cleanup: `pnpm test:docker:cleanup`
+  - Removes leftover Docker artifacts after interrupted smoke runs.
+- Parallels fresh-VM smokes:
+  - `pnpm test:parallels:macos`
+  - `pnpm test:parallels:windows`
+  - `pnpm test:parallels:linux`
+  - Use these for install/upgrade checks in clean guest VMs. They are much slower and more host-dependent than the normal local lanes.
 
 ## Docs sanity
 

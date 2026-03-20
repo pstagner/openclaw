@@ -10,6 +10,8 @@ title: "Updating"
 
 OpenClaw is moving fast (pre “1.0”). Treat updates like shipping infra: update → run checks → restart (or use `openclaw update`, which restarts) → verify.
 
+If you run OpenClaw on Kubernetes via `scripts/k8s`, do not use the website installer or `openclaw update` inside the pod as your main upgrade path. Use the manifest-driven redeploy flow in [Kubernetes](/install/kubernetes#update-a-live-cluster) so the PVC-backed state stays in place. On this fork's `scripts/k8s/openclaw-agent-cluster` path, also preserve the current `OPENCLAW_GATEWAY_TOKEN` before re-running the deploy script, or the script will rotate the token for the live cluster.
+
 ## Recommended: re-run the website installer (upgrade in place)
 
 The **preferred** update path is to re-run the installer from the website. It

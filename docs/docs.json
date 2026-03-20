@@ -1362,6 +1362,7 @@
                   "experiments/plans/acp-thread-bound-agents",
                   "experiments/plans/acp-unified-streaming-refactor",
                   "experiments/plans/browser-evaluate-cdp-refactor",
+                  "experiments/plans/hosted-openclaw-platform",
                   "experiments/plans/openresponses-gateway",
                   "experiments/plans/pty-process-supervision",
                   "experiments/plans/session-binding-channel-agnostic",
