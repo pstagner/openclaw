@@ -5,14 +5,14 @@ import { withTempHome as withTempHomeBase } from "../../test/helpers/temp-home.j
 import * as acpManagerModule from "../acp/control-plane/manager.js";
 import { AcpRuntimeError } from "../acp/runtime/errors.js";
 import * as embeddedModule from "../agents/pi-embedded.js";
-import type { OpenClawConfig } from "../config/config.js";
-import * as configModule from "../config/config.js";
+import * as configIoModule from "../config/io.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readSessionMessages } from "../gateway/session-utils.fs.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { agentCommand } from "./agent.js";
 
-const loadConfigSpy = vi.spyOn(configModule, "loadConfig");
+const loadConfigSpy = vi.spyOn(configIoModule, "loadConfig");
 const runEmbeddedPiAgentSpy = vi.spyOn(embeddedModule, "runEmbeddedPiAgent");
 const getAcpSessionManagerSpy = vi.spyOn(acpManagerModule, "getAcpSessionManager");
 
@@ -38,8 +38,8 @@ function createAcpEnabledConfig(home: string, storePath: string): OpenClawConfig
     },
     agents: {
       defaults: {
-        model: { primary: "openai/gpt-5.3-codex" },
-        models: { "openai/gpt-5.3-codex": {} },
+        model: { primary: "openai/gpt-5.4" },
+        models: { "openai/gpt-5.4": {} },
         workspace: path.join(home, "openclaw"),
       },
     },

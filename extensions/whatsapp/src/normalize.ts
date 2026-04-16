@@ -2,4 +2,7 @@ export {
   looksLikeWhatsAppTargetId,
   normalizeWhatsAppAllowFromEntries,
   normalizeWhatsAppMessagingTarget,
-} from "../../../src/channels/plugins/normalize/whatsapp.js";
+  isWhatsAppGroupJid,
+  isWhatsAppUserTarget,
+  normalizeWhatsAppTarget,
+} from "./normalize-target.js";

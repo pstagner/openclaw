@@ -1,8 +1,8 @@
-import type { PluginRuntime } from "openclaw/plugin-sdk/bluebubbles";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "./test-mocks.js";
 import { downloadBlueBubblesAttachment, sendBlueBubblesAttachment } from "./attachments.js";
-import { getCachedBlueBubblesPrivateApiStatus } from "./probe.js";
+import { fetchBlueBubblesServerInfo, getCachedBlueBubblesPrivateApiStatus } from "./probe.js";
+import type { PluginRuntime } from "./runtime-api.js";
 import { setBlueBubblesRuntime } from "./runtime.js";
 import {
   BLUE_BUBBLES_PRIVATE_API_STATUS,
@@ -13,6 +13,7 @@ import {
 import type { BlueBubblesAttachment } from "./types.js";
 
 const mockFetch = vi.fn();
+const fetchServerInfoMock = vi.mocked(fetchBlueBubblesServerInfo);
 const fetchRemoteMediaMock = vi.fn(
   async (params: {
     url: string;
@@ -278,7 +279,9 @@ describe("downloadBlueBubblesAttachment", () => {
           bluebubbles: {
             serverUrl: "http://localhost:1234",
             password: "test",
-            allowPrivateNetwork: true,
+            network: {
+              dangerouslyAllowPrivateNetwork: true,
+            },
           },
         },
       },
@@ -288,30 +291,89 @@ describe("downloadBlueBubblesAttachment", () => {
     expect(fetchMediaArgs.ssrfPolicy).toEqual({ allowPrivateNetwork: true });
   });
 
-  it("auto-allowlists serverUrl hostname when allowPrivateNetwork is not set", async () => {
+  it("auto-enables private-network fetches for loopback serverUrl when allowPrivateNetwork is not set", async () => {
     mockSuccessfulAttachmentDownload();
 
     const attachment: BlueBubblesAttachment = { guid: "att-no-ssrf" };
     await downloadBlueBubblesAttachment(attachment, {
       serverUrl: "http://localhost:1234",
       password: "test",
+      cfg: { channels: { bluebubbles: {} } },
     });
 
     const fetchMediaArgs = fetchRemoteMediaMock.mock.calls[0][0] as Record<string, unknown>;
-    expect(fetchMediaArgs.ssrfPolicy).toEqual({ allowedHostnames: ["localhost"] });
+    expect(fetchMediaArgs.ssrfPolicy).toEqual({ allowPrivateNetwork: true });
   });
 
-  it("auto-allowlists private IP serverUrl hostname when allowPrivateNetwork is not set", async () => {
+  it("auto-enables private-network fetches for private IP serverUrl when allowPrivateNetwork is not set", async () => {
     mockSuccessfulAttachmentDownload();
 
     const attachment: BlueBubblesAttachment = { guid: "att-private-ip" };
     await downloadBlueBubblesAttachment(attachment, {
       serverUrl: "http://192.168.1.5:1234",
       password: "test",
+      cfg: { channels: { bluebubbles: {} } },
     });
 
     const fetchMediaArgs = fetchRemoteMediaMock.mock.calls[0][0] as Record<string, unknown>;
-    expect(fetchMediaArgs.ssrfPolicy).toEqual({ allowedHostnames: ["192.168.1.5"] });
+    expect(fetchMediaArgs.ssrfPolicy).toEqual({ allowPrivateNetwork: true });
+  });
+
+  it("respects an explicit private-network opt-out for loopback serverUrl", async () => {
+    mockSuccessfulAttachmentDownload();
+
+    const attachment: BlueBubblesAttachment = { guid: "att-opt-out" };
+    await downloadBlueBubblesAttachment(attachment, {
+      serverUrl: "http://localhost:1234",
+      password: "test",
+      cfg: {
+        channels: {
+          bluebubbles: {
+            network: {
+              dangerouslyAllowPrivateNetwork: false,
+            },
+          },
+        },
+      },
+    });
+
+    const fetchMediaArgs = fetchRemoteMediaMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(fetchMediaArgs.ssrfPolicy).toBeUndefined();
+  });
+
+  it("allowlists public serverUrl hostname when allowPrivateNetwork is not set", async () => {
+    mockSuccessfulAttachmentDownload();
+
+    const attachment: BlueBubblesAttachment = { guid: "att-public-host" };
+    await downloadBlueBubblesAttachment(attachment, {
+      serverUrl: "https://bluebubbles.example.com:1234",
+      password: "test",
+    });
+
+    const fetchMediaArgs = fetchRemoteMediaMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(fetchMediaArgs.ssrfPolicy).toEqual({ allowedHostnames: ["bluebubbles.example.com"] });
+  });
+
+  it("keeps public serverUrl hostname pinning when private-network access is explicitly disabled", async () => {
+    mockSuccessfulAttachmentDownload();
+
+    const attachment: BlueBubblesAttachment = { guid: "att-public-host-opt-out" };
+    await downloadBlueBubblesAttachment(attachment, {
+      serverUrl: "https://bluebubbles.example.com:1234",
+      password: "test",
+      cfg: {
+        channels: {
+          bluebubbles: {
+            network: {
+              dangerouslyAllowPrivateNetwork: false,
+            },
+          },
+        },
+      },
+    });
+
+    const fetchMediaArgs = fetchRemoteMediaMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(fetchMediaArgs.ssrfPolicy).toEqual({ allowedHostnames: ["bluebubbles.example.com"] });
   });
 });
 
@@ -320,6 +382,8 @@ describe("sendBlueBubblesAttachment", () => {
     vi.stubGlobal("fetch", mockFetch);
     mockFetch.mockReset();
     fetchRemoteMediaMock.mockClear();
+    fetchServerInfoMock.mockReset();
+    fetchServerInfoMock.mockResolvedValue(null);
     setBlueBubblesRuntime(runtimeStub);
     vi.mocked(getCachedBlueBubblesPrivateApiStatus).mockReset();
     mockBlueBubblesPrivateApiStatus(
@@ -483,5 +547,225 @@ describe("sendBlueBubblesAttachment", () => {
     const bodyText = decodeBody(body);
     expect(bodyText).not.toContain('name="selectedMessageGuid"');
     expect(bodyText).not.toContain('name="partIndex"');
+  });
+
+  it("auto-creates a new chat when sending to a phone number with no existing chat", async () => {
+    // First call: resolveChatGuidForTarget queries chats, returns empty (no match)
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ data: [] }),
+    });
+    // Second call: createChatForHandle creates new chat
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            data: { chatGuid: "iMessage;-;+15559876543", guid: "iMessage;-;+15559876543" },
+          }),
+        ),
+    });
+    // Third call: actual attachment send
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      text: () => Promise.resolve(JSON.stringify({ data: { guid: "attach-msg-1" } })),
+    });
+
+    const result = await sendBlueBubblesAttachment({
+      to: "+15559876543",
+      buffer: new Uint8Array([1, 2, 3]),
+      filename: "photo.jpg",
+      contentType: "image/jpeg",
+      opts: { serverUrl: "http://localhost:1234", password: "test" },
+    });
+
+    expect(result.messageId).toBe("attach-msg-1");
+    // Verify chat creation was called
+    const createCallBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(createCallBody.addresses).toEqual(["+15559876543"]);
+    // Verify attachment was sent to the newly created chat
+    const attachBody = mockFetch.mock.calls[2][1]?.body as Uint8Array;
+    const attachText = decodeBody(attachBody);
+    expect(attachText).toContain("iMessage;-;+15559876543");
+  });
+
+  it("retries chatGuid resolution after creating a chat with no returned guid", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ data: [] }),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      text: () => Promise.resolve(JSON.stringify({ data: {} })),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ data: [{ guid: "iMessage;-;+15557654321" }] }),
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      text: () => Promise.resolve(JSON.stringify({ data: { guid: "attach-msg-2" } })),
+    });
+
+    const result = await sendBlueBubblesAttachment({
+      to: "+15557654321",
+      buffer: new Uint8Array([4, 5, 6]),
+      filename: "photo.jpg",
+      contentType: "image/jpeg",
+      opts: { serverUrl: "http://localhost:1234", password: "test" },
+    });
+
+    expect(result.messageId).toBe("attach-msg-2");
+    const createCallBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(createCallBody.addresses).toEqual(["+15557654321"]);
+    const attachBody = mockFetch.mock.calls[3][1]?.body as Uint8Array;
+    const attachText = decodeBody(attachBody);
+    expect(attachText).toContain("iMessage;-;+15557654321");
+  });
+
+  describe("lazy private API refresh (#43764)", () => {
+    const privateApiStatusMock = vi.mocked(getCachedBlueBubblesPrivateApiStatus);
+
+    it("refreshes cache when expired and reply threading is requested", async () => {
+      privateApiStatusMock.mockReturnValueOnce(null).mockReturnValueOnce(true);
+      fetchServerInfoMock.mockResolvedValueOnce({ private_api: true });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ data: { guid: "msg-refreshed" } })),
+      });
+
+      const result = await sendBlueBubblesAttachment({
+        to: "chat_guid:iMessage;-;+15551234567",
+        buffer: new Uint8Array([1, 2, 3]),
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        replyToMessageGuid: "reply-guid-456",
+        opts: { serverUrl: "http://localhost:1234", password: "test" },
+      });
+
+      expect(result.messageId).toBe("msg-refreshed");
+      expect(fetchServerInfoMock).toHaveBeenCalledTimes(1);
+      const body = mockFetch.mock.calls[0][1]?.body as Uint8Array;
+      const bodyText = decodeBody(body);
+      expect(bodyText).toContain('name="method"');
+      expect(bodyText).toContain("private-api");
+      expect(bodyText).toContain('name="selectedMessageGuid"');
+    });
+
+    it("does not refresh when cache is populated (cache hit)", async () => {
+      mockBlueBubblesPrivateApiStatusOnce(
+        privateApiStatusMock,
+        BLUE_BUBBLES_PRIVATE_API_STATUS.enabled,
+      );
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ data: { guid: "msg-cached" } })),
+      });
+
+      await sendBlueBubblesAttachment({
+        to: "chat_guid:iMessage;-;+15551234567",
+        buffer: new Uint8Array([1, 2, 3]),
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        replyToMessageGuid: "reply-guid-123",
+        opts: { serverUrl: "http://localhost:1234", password: "test" },
+      });
+
+      expect(fetchServerInfoMock).not.toHaveBeenCalled();
+    });
+
+    it("degrades gracefully when refresh fails", async () => {
+      fetchServerInfoMock.mockRejectedValueOnce(new Error("network error"));
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ data: { guid: "msg-degraded" } })),
+      });
+
+      const runtimeLog = vi.fn();
+      setBlueBubblesRuntime({
+        ...runtimeStub,
+        log: runtimeLog,
+      } as unknown as PluginRuntime);
+
+      const result = await sendBlueBubblesAttachment({
+        to: "chat_guid:iMessage;-;+15551234567",
+        buffer: new Uint8Array([1, 2, 3]),
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        replyToMessageGuid: "reply-guid-789",
+        opts: { serverUrl: "http://localhost:1234", password: "test" },
+      });
+
+      expect(result.messageId).toBe("msg-degraded");
+      expect(fetchServerInfoMock).toHaveBeenCalledTimes(1);
+      expect(runtimeLog).toHaveBeenCalledTimes(1);
+      expect(runtimeLog.mock.calls[0]?.[0]).toContain("Private API status unknown");
+    });
+
+    it("degrades reply threading when refresh succeeds with private_api: false", async () => {
+      privateApiStatusMock.mockReturnValueOnce(null).mockReturnValueOnce(false);
+      fetchServerInfoMock.mockResolvedValueOnce({ private_api: false });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ data: { guid: "msg-disabled" } })),
+      });
+
+      const runtimeLog = vi.fn();
+      setBlueBubblesRuntime({
+        ...runtimeStub,
+        log: runtimeLog,
+      } as unknown as PluginRuntime);
+
+      const result = await sendBlueBubblesAttachment({
+        to: "chat_guid:iMessage;-;+15551234567",
+        buffer: new Uint8Array([1, 2, 3]),
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        replyToMessageGuid: "reply-guid-disabled",
+        opts: { serverUrl: "http://localhost:1234", password: "test" },
+      });
+
+      expect(result.messageId).toBe("msg-disabled");
+      expect(fetchServerInfoMock).toHaveBeenCalledTimes(1);
+      // No warning — status is known (disabled), not unknown
+      expect(runtimeLog).not.toHaveBeenCalled();
+      const body = mockFetch.mock.calls[0][1]?.body as Uint8Array;
+      const bodyText = decodeBody(body);
+      expect(bodyText).not.toContain('name="selectedMessageGuid"');
+      expect(bodyText).not.toContain('name="method"');
+    });
+
+    it("does not refresh when no reply threading is requested", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(JSON.stringify({ data: { guid: "msg-plain" } })),
+      });
+
+      await sendBlueBubblesAttachment({
+        to: "chat_guid:iMessage;-;+15551234567",
+        buffer: new Uint8Array([1, 2, 3]),
+        filename: "photo.jpg",
+        contentType: "image/jpeg",
+        opts: { serverUrl: "http://localhost:1234", password: "test" },
+      });
+
+      expect(fetchServerInfoMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("still throws for non-handle targets when chatGuid is not found", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ data: [] }),
+    });
+
+    await expect(
+      sendBlueBubblesAttachment({
+        to: "chat_id:999",
+        buffer: new Uint8Array([1, 2, 3]),
+        filename: "photo.jpg",
+        opts: { serverUrl: "http://localhost:1234", password: "test" },
+      }),
+    ).rejects.toThrow("chatGuid not found");
   });
 });
