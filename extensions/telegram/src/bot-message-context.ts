@@ -208,9 +208,9 @@ export const buildTelegramMessageContext = async ({
 
   const threadIdForConfig = resolvedThreadId ?? dmThreadId;
   const { groupConfig, topicConfig } = resolveTelegramGroupConfig(chatId, threadIdForConfig);
-  const directConfig = !isGroup ? (groupConfig as TelegramDirectConfig | undefined) : undefined;
+  const directConfig = !isGroup ? (groupConfig) : undefined;
   const telegramGroupConfig = isGroup
-    ? (groupConfig as TelegramGroupConfig | undefined)
+    ? (groupConfig)
     : undefined;
   // Use direct config dmPolicy override if available for DMs
   const effectiveDmPolicy =
